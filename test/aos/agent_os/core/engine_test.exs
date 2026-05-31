@@ -54,5 +54,19 @@ defmodule AOS.AgentOS.Core.EngineTest do
       assert Enum.at(history, 1).outcome == :fail
       assert Enum.at(history, 3).outcome == :pass
     end
+
+    test "marks execution failed when the graph points to a missing node" do
+      graph =
+        Graph.new(:test_missing_node)
+        |> Graph.set_initial(:missing)
+
+      assert {:error, :missing, "Node missing not found in graph", context} =
+               Engine.run(graph, %{task: "Broken graph"})
+
+      execution = Repo.get!(AOS.AgentOS.Core.Execution, context.execution_id)
+
+      assert execution.status == "failed"
+      assert execution.error_message == "Node missing not found in graph"
+    end
   end
 end

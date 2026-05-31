@@ -67,8 +67,12 @@ defmodule AOS.AgentOS.Core.Engine do
     end)
   end
 
-  defp perform_node_execution(_graph, node_id, nil, _context, _notify_pid) do
-    {:error, "Node #{node_id} not found in graph"}
+  defp perform_node_execution(_graph, node_id, nil, context, notify_pid) do
+    reason = "Node #{node_id} not found in graph"
+    Logger.error(reason)
+    Executions.fail_execution(context.execution_id, context, reason)
+    if notify_pid, do: send(notify_pid, {:workflow_error, node_id, reason})
+    {:error, node_id, reason, context}
   end
 
   defp perform_node_execution(graph, node_id, node_module, context, notify_pid) do
