@@ -5,7 +5,7 @@ defmodule AOS.AgentOS.Core.ToolAudit do
   use AOS.Schema
   import Ecto.Changeset
 
-  @statuses ~w(succeeded failed rejected)
+  @statuses ~w(succeeded failed rejected pending)
   @risk_tiers ~w(low medium high)
   @approval_statuses ~w(not_required approved rejected)
 

@@ -26,7 +26,7 @@ defmodule AOS.AgentOS.Tools.ResultNormalizer do
 
         %{
           ok: false,
-          status: if(decision == :rejected, do: "rejected", else: "failed"),
+          status: error_status(decision),
           server_id: server_id,
           tool_name: tool_name,
           arguments: args,
@@ -45,8 +45,12 @@ defmodule AOS.AgentOS.Tools.ResultNormalizer do
 
   defp approval_status(:approved, _), do: "approved"
   defp approval_status(:rejected, _), do: "rejected"
+  defp approval_status(:pending, _), do: "pending"
   defp approval_status(_decision, false), do: "not_required"
   defp approval_status(_decision, true), do: "pending"
+  defp error_status(:rejected), do: "rejected"
+  defp error_status(:pending), do: "pending"
+  defp error_status(_decision), do: "failed"
   defp error_message(reason) when is_binary(reason), do: reason
   defp error_message(reason), do: inspect(reason)
 end

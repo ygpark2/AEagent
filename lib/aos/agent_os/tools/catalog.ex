@@ -18,9 +18,15 @@ defmodule AOS.AgentOS.Tools.Catalog do
   }
 
   def metadata_for("internal", tool_name),
+    do: static_metadata_for("internal", tool_name)
+
+  def metadata_for(_server_id, tool_name),
+    do: static_metadata_for(nil, tool_name)
+
+  def static_metadata_for("internal", tool_name),
     do: Map.get(@internal_tool_metadata, tool_name, default_metadata())
 
-  def metadata_for(_server_id, _tool_name), do: default_metadata()
+  def static_metadata_for(_server_id, _tool_name), do: default_metadata()
 
   defp default_metadata,
     do: %{risk_tier: "medium", requires_confirmation: false, retryable: false}

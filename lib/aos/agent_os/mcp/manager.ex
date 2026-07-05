@@ -6,6 +6,7 @@ defmodule AOS.AgentOS.MCP.Manager do
   require Logger
   alias AOS.AgentOS.MCP.Client
   alias AOS.AgentOS.MCP.Internal.Shell
+  alias AOS.AgentOS.Tools
 
   def start_link(_opts) do
     GenServer.start_link(__MODULE__, [], name: __MODULE__)
@@ -22,12 +23,19 @@ defmodule AOS.AgentOS.MCP.Manager do
     internal_tools ++ external_tools
   end
 
-  def call_tool("internal", tool_name, arguments) do
+  def sync_tool_registry do
+    all_tools()
+    |> Tools.sync_registry()
+  end
+
+  def call_tool(server_id, tool_name, arguments, timeout \\ 60_000)
+
+  def call_tool("internal", tool_name, arguments, _timeout) do
     Shell.call_tool(tool_name, arguments)
   end
 
-  def call_tool(server_id, tool_name, arguments) do
-    GenServer.call(__MODULE__, {:call_tool, server_id, tool_name, arguments}, 60_000)
+  def call_tool(server_id, tool_name, arguments, timeout) do
+    GenServer.call(__MODULE__, {:call_tool, server_id, tool_name, arguments, timeout}, timeout)
   end
 
   @doc """
@@ -108,10 +116,10 @@ defmodule AOS.AgentOS.MCP.Manager do
   end
 
   @impl true
-  def handle_call({:call_tool, server_id, tool_name, arguments}, _from, state) do
+  def handle_call({:call_tool, server_id, tool_name, arguments, timeout}, _from, state) do
     case Map.get(state.clients, server_id) do
       nil -> {:reply, {:error, :server_not_found}, state}
-      pid -> {:reply, Client.call_tool(pid, tool_name, arguments), state}
+      pid -> {:reply, Client.call_tool(pid, tool_name, arguments, timeout), state}
     end
   end
 end

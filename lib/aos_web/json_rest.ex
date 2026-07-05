@@ -15,14 +15,14 @@ defmodule AOSWeb.JsonRest do
 
   defp request(method, url, body, options) do
     headers = Keyword.get(options, :headers, [])
-    
-    req_opts = 
+
+    req_opts =
       options
       |> Keyword.delete(:headers)
       |> Keyword.put(:method, method)
       |> Keyword.put(:url, url)
       |> Keyword.put(:headers, headers)
-    
+
     req_opts = if body, do: Keyword.put(req_opts, :json, body), else: req_opts
 
     case Req.request(req_opts) do

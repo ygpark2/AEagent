@@ -88,7 +88,8 @@ defmodule AOS.AgentOS.Evolution.StrategyLifecycle do
     %{
       status: next_status,
       promoted_at: promoted_at(strategy, status, next_fitness),
-      archived_at: if(next_status == "archived", do: DateTime.utc_now(), else: strategy.archived_at),
+      archived_at:
+        if(next_status == "archived", do: DateTime.utc_now(), else: strategy.archived_at),
       fitness_score: next_fitness,
       success_count: strategy.success_count + success_increment(status),
       failure_count: strategy.failure_count + failure_increment(status),

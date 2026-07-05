@@ -18,7 +18,7 @@ defmodule AOS.HTTPClient do
   end
 
   def post(url, body, headers \\ [], opts \\ []) do
-    req_opts = Keyword.merge(opts, [headers: headers, body: body])
+    req_opts = Keyword.merge(opts, headers: headers, body: body)
 
     case Req.post(url, req_opts) do
       {:ok, %Req.Response{status: status, body: response_body}} ->

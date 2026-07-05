@@ -13,6 +13,7 @@ defmodule AOS.AgentOS.Core.Execution do
   schema "agent_executions" do
     field :session_id, Ecto.UUID
     field :source_execution_id, Ecto.UUID
+    field :workflow_id, Ecto.UUID
     field :domain, :string
     field :task, :string
     field :status, :string, default: "queued"
@@ -40,6 +41,7 @@ defmodule AOS.AgentOS.Core.Execution do
       :task,
       :session_id,
       :source_execution_id,
+      :workflow_id,
       :status,
       :trigger_kind,
       :autonomy_level,

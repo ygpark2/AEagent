@@ -39,7 +39,8 @@ defmodule AOS.AgentOS.Core.MemoryStore do
     # 3. Rank candidates by similarity in Elixir (RAG)
     candidates
     |> Enum.map(fn cand ->
-      cand_vector = Nx.from_binary(cand.embedding, :f32) |> Nx.reshape({384}) # MiniLM size
+      # MiniLM size
+      cand_vector = Nx.from_binary(cand.embedding, :f32) |> Nx.reshape({384})
       score = Embedder.similarity(query_vector, cand_vector)
       {cand, score}
     end)

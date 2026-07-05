@@ -5,6 +5,7 @@ defmodule AOS.AgentOS.Execution.Replay do
 
   alias AOS.AgentOS.Core.{Artifact, DelegationTrace, Execution, Session}
   alias AOS.AgentOS.Evolution.StrategyRegistry
+  alias AOS.AgentOS.Execution.EventStore
   alias AOS.AgentOS.{Executions, Tools}
 
   def replay_execution(execution_id) do
@@ -31,7 +32,11 @@ defmodule AOS.AgentOS.Execution.Replay do
       tool_audits:
         execution.id
         |> Tools.list_audits()
-        |> Enum.map(&Tools.serialize_audit/1)
+        |> Enum.map(&Tools.serialize_audit/1),
+      events:
+        execution.id
+        |> Executions.list_events()
+        |> Enum.map(&EventStore.serialize/1)
     }
   end
 
@@ -39,6 +44,7 @@ defmodule AOS.AgentOS.Execution.Replay do
     %{
       id: execution.id,
       session_id: execution.session_id,
+      workflow_id: execution.workflow_id,
       domain: execution.domain,
       task: execution.task,
       status: execution.status,

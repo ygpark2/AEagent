@@ -86,9 +86,15 @@ defmodule AOSWeb.Router do
       post "/executions/:id/resume", ExecutionController, :resume
       post "/executions/:id/retry", ExecutionController, :retry
       get "/executions/:id/replay", ExecutionController, :replay
+      post "/approvals/:id/approve", ApprovalController, :approve
+      post "/approvals/:id/reject", ApprovalController, :reject
+      post "/tools/registry/sync", ToolRegistryController, :sync
+      patch "/tools/registry/:server_id/:tool_name", ToolRegistryController, :update
       post "/strategies/prune", StrategyController, :prune
       get "/strategies/:id/events", StrategyController, :events
       get "/strategies/:id/executions", StrategyController, :executions
+      resources "/approvals", ApprovalController, only: [:index, :show]
+      resources "/tools/registry", ToolRegistryController, only: [:index]
       resources "/strategies", StrategyController, only: [:index, :show]
       resources "/sessions", SessionController, only: [:index, :show]
       resources "/executions", ExecutionController, only: [:index, :show, :create]

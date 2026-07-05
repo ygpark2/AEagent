@@ -34,9 +34,15 @@ defmodule AOS.AgentOS.Executions do
              session_id: session.id,
              strategy_id: Keyword.get(opts, :strategy_id),
              source_execution_id: Keyword.get(opts, :source_execution_id),
+             workflow_id: Keyword.get(opts, :workflow_id),
              trigger_kind: Keyword.get(opts, :trigger_kind, "manual"),
              autonomy_level: autonomy_level
            }) do
+      append_execution_event(execution, "execution.queued", "executions", %{
+        "task" => task,
+        "trigger_kind" => execution.trigger_kind
+      })
+
       ArtifactRecorder.persist_seed_artifacts(execution, initial_context)
 
       maybe_start_execution(%{
@@ -88,6 +94,7 @@ defmodule AOS.AgentOS.Executions do
         start_immediately: Keyword.get(opts, :start_immediately, true),
         session_id: execution.session_id,
         source_execution_id: execution.id,
+        workflow_id: execution.workflow_id,
         trigger_kind: "resume",
         initial_context: checkpoint_context,
         autonomy_level: execution.autonomy_level
@@ -105,6 +112,7 @@ defmodule AOS.AgentOS.Executions do
       start_immediately: Keyword.get(opts, :start_immediately, true),
       session_id: execution.session_id,
       source_execution_id: execution.id,
+      workflow_id: execution.workflow_id,
       trigger_kind: "retry",
       autonomy_level: execution.autonomy_level
     )
@@ -124,6 +132,8 @@ defmodule AOS.AgentOS.Executions do
 
   def list_delegation_traces(parent_execution_id),
     do: Store.list_delegation_traces(parent_execution_id)
+
+  def list_events(execution_id), do: Store.list_events(execution_id)
 
   def create_delegation_trace(attrs), do: Store.create_delegation_trace(attrs)
 
@@ -145,6 +155,7 @@ defmodule AOS.AgentOS.Executions do
              Map.merge(%{status: "running", started_at: DateTime.utc_now()}, attrs)
            ) do
       update_session_status(execution.session_id, "running", execution.id)
+      append_execution_event(execution, "execution.running", "executions", %{})
       {:ok, execution}
     end
   end
@@ -155,6 +166,12 @@ defmodule AOS.AgentOS.Executions do
     with {:ok, execution} <-
            Store.update_execution(id, execution_attrs_from_context(context, "succeeded", nil)) do
       update_session_status(execution.session_id, "completed", execution.id)
+
+      append_execution_event(execution, "execution.succeeded", "executions", %{
+        "quality_score" => execution.quality_score,
+        "fitness_score" => execution.fitness_score
+      })
+
       ArtifactRecorder.record_final_artifacts(execution, context)
 
       StrategyEvaluator.record_outcome(
@@ -176,6 +193,11 @@ defmodule AOS.AgentOS.Executions do
     with {:ok, execution} <-
            Store.update_execution(id, execution_attrs_from_context(context, "blocked", reason)) do
       update_session_status(execution.session_id, "blocked", execution.id)
+
+      append_execution_event(execution, "execution.blocked", "executions", %{
+        "reason" => reason_to_string(reason)
+      })
+
       ArtifactRecorder.record_final_artifacts(execution, context)
 
       StrategyEvaluator.record_outcome(
@@ -197,6 +219,11 @@ defmodule AOS.AgentOS.Executions do
     with {:ok, execution} <-
            Store.update_execution(id, execution_attrs_from_context(context, "failed", reason)) do
       update_session_status(execution.session_id, "failed", execution.id)
+
+      append_execution_event(execution, "execution.failed", "executions", %{
+        "reason" => reason_to_string(reason)
+      })
+
       ArtifactRecorder.record_final_artifacts(execution, context)
 
       StrategyEvaluator.record_outcome(
@@ -247,6 +274,7 @@ defmodule AOS.AgentOS.Executions do
         task: task,
         history: history,
         execution_id: execution_id,
+        source_execution_id: get_execution!(execution_id).source_execution_id,
         session_id: session_id,
         autonomy_level: autonomy_level,
         strategy_id: graph.strategy_id,
@@ -282,7 +310,8 @@ defmodule AOS.AgentOS.Executions do
       domain: Map.get(context, :domain, "general"),
       session_id: Map.get(context, :session_id),
       autonomy_level: Map.get(context, :autonomy_level, Autonomy.default_level()),
-      strategy_id: Map.get(context, :strategy_id)
+      strategy_id: Map.get(context, :strategy_id),
+      workflow_id: Map.get(context, :workflow_id)
     }
 
     with {:ok, execution} <- Store.create_execution(attrs) do
@@ -366,6 +395,17 @@ defmodule AOS.AgentOS.Executions do
     DateTime.diff(finished_at, started_at, :millisecond)
   end
 
+  defp append_execution_event(execution, event_type, source, payload) do
+    Store.append_event(%{
+      execution_id: execution.id,
+      session_id: execution.session_id,
+      workflow_id: execution.workflow_id,
+      event_type: event_type,
+      source: source,
+      payload: payload
+    })
+  end
+
   defp maybe_start_execution(%{execution: execution, start_immediately?: false}) do
     {:ok, Store.get_execution!(execution.id)}
   end
@@ -386,7 +426,7 @@ defmodule AOS.AgentOS.Executions do
         notify: notify_pid,
         history: history,
         session_id: session.id,
-        initial_context: initial_context,
+        initial_context: Map.put_new(initial_context, :workflow_id, execution.workflow_id),
         autonomy_level: autonomy_level
       )
     end

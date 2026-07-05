@@ -6,6 +6,7 @@ defmodule AOS.AgentOS.DashboardService do
   alias AOS.AgentOS.Executions
   alias AOS.AgentOS.MCP.Internal.Shell
   alias AOS.AgentOS.Skills.CommandFormatter
+  alias AOS.AgentOS.ToolUse.ApprovalQueue
   alias AOSWeb.Live.Presenters.AgentDashboardPresenter
 
   def initial_assigns(default_ui_settings) do
@@ -19,6 +20,7 @@ defmodule AOS.AgentOS.DashboardService do
       prompt_history: [],
       agent_pid: nil,
       pending_approvals: %{},
+      durable_approvals: durable_approvals(),
       active_right_tab: :inspection,
       ui_settings: default_ui_settings,
       full_width: true
@@ -36,6 +38,7 @@ defmodule AOS.AgentOS.DashboardService do
       prompt_history: [],
       agent_pid: nil,
       pending_approvals: %{},
+      durable_approvals: [],
       active_right_tab: :inspection,
       ui_settings: default_ui_settings,
       full_width: true
@@ -104,6 +107,11 @@ defmodule AOS.AgentOS.DashboardService do
           pending_approvals: pending_approvals
         }
     end
+  end
+
+  def durable_approvals do
+    ApprovalQueue.list_pending()
+    |> Enum.map(&ApprovalQueue.serialize/1)
   end
 
   def merge_ui_settings(

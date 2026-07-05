@@ -14,11 +14,11 @@ defmodule AOS.AgentOS.MCP.Client do
     GenServer.call(pid, {:request, "tools/list", %{}}, 30_000)
   end
 
-  def call_tool(pid, tool_name, arguments) do
+  def call_tool(pid, tool_name, arguments, timeout \\ 60_000) do
     GenServer.call(
       pid,
       {:request, "tools/call", %{name: tool_name, arguments: arguments}},
-      60_000
+      timeout
     )
   end
 

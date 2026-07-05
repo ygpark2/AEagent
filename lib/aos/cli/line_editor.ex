@@ -19,7 +19,8 @@ defmodule AOS.CLI.LineEditor do
     initial_state = %{
       prompt: prompt,
       buffer: "",
-      cursor: 0, # Grapheme-based cursor position
+      # Grapheme-based cursor position
+      cursor: 0,
       history: Enum.uniq(history),
       history_index: nil,
       draft: ""
@@ -30,7 +31,7 @@ defmodule AOS.CLI.LineEditor do
          :ok <- render(initial_state) do
       result = loop(initial_state)
       restore_tty_mode(stty_state)
-      
+
       case result do
         {:ok, buffer} -> {:ok, String.normalize(buffer, :nfc)}
         other -> other
@@ -58,11 +59,13 @@ defmodule AOS.CLI.LineEditor do
       <<char>> when char in [@ctrl_h, @backspace] ->
         state |> handle_backspace() |> rerender_and_continue()
 
-      <<13>> -> # Enter
+      # Enter
+      <<13>> ->
         IO.write("\n")
         {:ok, state.buffer}
 
-      <<10>> -> # Newline
+      # Newline
+      <<10>> ->
         IO.write("\n")
         {:ok, state.buffer}
 
@@ -71,7 +74,7 @@ defmodule AOS.CLI.LineEditor do
 
       <<char_code>> ->
         text = read_full_utf8(char_code)
-        
+
         if text == "" or char_code < 32 do
           rerender_and_continue(state)
         else
@@ -91,6 +94,7 @@ defmodule AOS.CLI.LineEditor do
   end
 
   defp handle_backspace(%{cursor: 0} = state), do: state
+
   defp handle_backspace(state) do
     graphemes = String.graphemes(state.buffer)
     cursor = min(max(state.cursor, 0), length(graphemes))
@@ -110,18 +114,30 @@ defmodule AOS.CLI.LineEditor do
 
   defp handle_escape_sequence(state) do
     case IO.binread(:stdio, 2) do
-      <<"[A">> -> move_history(state, :up)
-      <<"[B">> -> move_history(state, :down)
-      <<"[C">> -> move_cursor(state, :right)
-      <<"[D">> -> move_cursor(state, :left)
-      <<"[3">> -> 
-        _ = IO.binread(:stdio, 1) # consume ~
+      <<"[A">> ->
+        move_history(state, :up)
+
+      <<"[B">> ->
+        move_history(state, :down)
+
+      <<"[C">> ->
+        move_cursor(state, :right)
+
+      <<"[D">> ->
+        move_cursor(state, :left)
+
+      <<"[3">> ->
+        # consume ~
+        _ = IO.binread(:stdio, 1)
         handle_delete(state)
-      _ -> state
+
+      _ ->
+        state
     end
   end
 
   defp move_cursor(state, :left), do: %{state | cursor: max(state.cursor - 1, 0)}
+
   defp move_cursor(state, :right) do
     len = length(String.graphemes(state.buffer))
     %{state | cursor: min(state.cursor + 1, len)}
@@ -138,23 +154,41 @@ defmodule AOS.CLI.LineEditor do
   defp move_history(state, direction) do
     case direction do
       :up ->
-        idx = if state.history_index == nil, do: length(state.history) - 1, else: state.history_index - 1
+        idx =
+          if state.history_index == nil,
+            do: length(state.history) - 1,
+            else: state.history_index - 1
+
         if idx >= 0 do
           buf = Enum.at(state.history, idx)
-          %{state | history_index: idx, draft: if(state.history_index == nil, do: state.buffer, else: state.draft), buffer: buf, cursor: length(String.graphemes(buf))}
+
+          %{
+            state
+            | history_index: idx,
+              draft: if(state.history_index == nil, do: state.buffer, else: state.draft),
+              buffer: buf,
+              cursor: length(String.graphemes(buf))
+          }
         else
           state
         end
+
       :down ->
         if state.history_index == nil do
           state
         else
           idx = state.history_index + 1
+
           if idx < length(state.history) do
             buf = Enum.at(state.history, idx)
             %{state | history_index: idx, buffer: buf, cursor: length(String.graphemes(buf))}
           else
-            %{state | history_index: nil, buffer: state.draft, cursor: length(String.graphemes(state.draft))}
+            %{
+              state
+              | history_index: nil,
+                buffer: state.draft,
+                cursor: length(String.graphemes(state.draft))
+            }
           end
         end
     end
@@ -173,10 +207,10 @@ defmodule AOS.CLI.LineEditor do
     # Move to absolute column for maximum reliability
     graphemes = String.graphemes(state.buffer)
     left_part = Enum.take(graphemes, state.cursor)
-    
+
     # +1 because terminal columns are 1-indexed
     target_col = display_width(state.prompt) + display_width(Enum.join(left_part)) + 1
-    
+
     IO.write("\e[#{target_col}G")
     :ok
   end
@@ -190,14 +224,25 @@ defmodule AOS.CLI.LineEditor do
   defp grapheme_width(g) do
     case String.to_charlist(g) do
       [cp | _] ->
-        if (cp >= 0x1100 && cp <= 0x11FF) || # Hangul Jamo
-           (cp >= 0x2E80 && cp <= 0x9FFF) || # CJK Ideographs
-           (cp >= 0xAC00 && cp <= 0xD7AF) || # Hangul Syllables
-           (cp >= 0xF900 && cp <= 0xFAFF) || # CJK Compatibility
-           (cp >= 0xFE30 && cp <= 0xFE4F) || # CJK Compatibility Forms
-           (cp >= 0xFF00 && cp <= 0xFF60)    # Fullwidth
-        do 2 else 1 end
-      [] -> 0
+        # Hangul Jamo
+        # CJK Ideographs
+        # Hangul Syllables
+        # CJK Compatibility
+        # CJK Compatibility Forms
+        # Fullwidth
+        if (cp >= 0x1100 && cp <= 0x11FF) ||
+             (cp >= 0x2E80 && cp <= 0x9FFF) ||
+             (cp >= 0xAC00 && cp <= 0xD7AF) ||
+             (cp >= 0xF900 && cp <= 0xFAFF) ||
+             (cp >= 0xFE30 && cp <= 0xFE4F) ||
+             (cp >= 0xFF00 && cp <= 0xFF60) do
+          2
+        else
+          1
+        end
+
+      [] ->
+        0
     end
   end
 
@@ -212,6 +257,7 @@ defmodule AOS.CLI.LineEditor do
 
   defp stty(a, b \\ nil, c \\ nil) do
     args = Enum.reject([a, b, c], &is_nil/1)
+
     case System.cmd("stty", args, stderr_to_stdout: true) do
       {output, 0} -> {:ok, String.trim(output)}
       _ -> {:error, :stty}

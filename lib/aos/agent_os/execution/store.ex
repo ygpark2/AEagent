@@ -7,7 +7,7 @@ defmodule AOS.AgentOS.Execution.Store do
 
   alias AOS.AgentOS.Autonomy
   alias AOS.AgentOS.Core.{Artifact, DelegationTrace, Execution, MemoryStore, Session}
-  alias AOS.AgentOS.Execution.StateMachine
+  alias AOS.AgentOS.Execution.{EventStore, StateMachine}
   alias AOS.Repo
 
   @default_limit 20
@@ -63,17 +63,17 @@ defmodule AOS.AgentOS.Execution.Store do
         |> Execution.changeset(attrs)
         |> Repo.update()
 
-      case result do
-        {:ok, %Execution{success: true, embedding: nil} = updated} ->
-          # Generate embedding in background to not block the main flow
-          Task.start(fn -> MemoryStore.update_embedding(updated) end)
-          {:ok, updated}
-
-        other ->
-          other
-      end
+      maybe_update_embedding(result)
     end
   end
+
+  defp maybe_update_embedding({:ok, %Execution{success: true, embedding: nil} = updated}) do
+    # Generate embedding in background to not block the main flow.
+    Task.start(fn -> MemoryStore.update_embedding(updated) end)
+    {:ok, updated}
+  end
+
+  defp maybe_update_embedding(result), do: result
 
   defp validate_status_transition(execution, %{status: next}),
     do: StateMachine.transition(execution.status, next)
@@ -151,6 +151,10 @@ defmodule AOS.AgentOS.Execution.Store do
     |> DelegationTrace.changeset(attrs)
     |> Repo.update()
   end
+
+  def append_event(attrs), do: EventStore.append_event(attrs)
+  def list_events(execution_id), do: EventStore.list_events(execution_id)
+  def serialize_event(event), do: EventStore.serialize(event)
 
   defp maybe_filter_by_session(query, nil), do: query
 

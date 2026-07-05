@@ -14,21 +14,16 @@ defmodule AOS.AgentOS.Core.MemoryManagerTest do
     end
 
     test "handle_info :cleanup" do
-      with_mock MemoryStore, [
+      with_mock MemoryStore,
         delete_failed_executions_before: fn _ -> 1 end,
         clear_success_logs_before: fn _ -> 2 end,
         successful_count_for_domain: fn _ -> 100 end,
-        delete_oldest_successes_for_domain: fn _, _ -> 3 end
-      ] do
-        with_mock NodeRegistry, [
-          all_domains: fn -> ["test_domain"] end
-        ] do
-          with_mock StrategyRegistry, [
-            prune: fn -> %{archived: 4} end
-          ] do
-            with_mock AOS.AgentOS.Config, [:passthrough], [
-              domain_success_cap: fn -> 50 end
-            ] do
+        delete_oldest_successes_for_domain: fn _, _ -> 3 end do
+        with_mock NodeRegistry,
+          all_domains: fn -> ["test_domain"] end do
+          with_mock StrategyRegistry,
+            prune: fn -> %{archived: 4} end do
+            with_mock AOS.AgentOS.Config, [:passthrough], domain_success_cap: fn -> 50 end do
               MemoryManager.handle_info(:cleanup, %{})
               assert called(MemoryStore.delete_failed_executions_before(:_))
               assert called(MemoryStore.clear_success_logs_before(:_))

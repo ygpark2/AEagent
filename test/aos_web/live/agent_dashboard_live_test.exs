@@ -3,6 +3,9 @@ defmodule AOSWeb.AgentDashboardLiveTest do
 
   import Phoenix.LiveViewTest
 
+  alias AOS.AgentOS.Executions
+  alias AOS.AgentOS.ToolUse.ApprovalQueue
+
   setup %{conn: conn} do
     {:ok, conn: put_admin_session(conn)}
   end
@@ -158,6 +161,39 @@ defmodule AOSWeb.AgentDashboardLiveTest do
     assert html =~ "Right Pane Font"
     assert html =~ "Message Density"
     assert html =~ "Chat Bubble Width"
+  end
+
+  test "renders durable approval queue in approvals tab and rejects request", %{conn: conn} do
+    {:ok, execution} = Executions.enqueue("dashboard approval task", start_immediately: false)
+
+    {:ok, request} =
+      ApprovalQueue.create_request(%{
+        execution_id: execution.id,
+        session_id: execution.session_id,
+        server_id: "internal",
+        tool_name: "write_file",
+        arguments: %{"path" => "tmp.txt"},
+        risk_tier: "high"
+      })
+
+    {:ok, view, _html} = live(conn, "/agent")
+
+    view
+    |> element(~s(button[phx-click="switch_right_tab"][phx-value-tab="approvals"]))
+    |> render_click()
+
+    html = render(view)
+    assert html =~ "Pending Approvals"
+    assert html =~ "write_file"
+    assert html =~ "tmp.txt"
+
+    view
+    |> element(~s(button[phx-click="reject_durable_approval"][phx-value-id="#{request.id}"]))
+    |> render_click()
+
+    html = render(view)
+    assert html =~ "Approval rejected."
+    assert html =~ "No pending approvals."
   end
 
   test "updates ui settings without leaving settings tab", %{conn: conn} do

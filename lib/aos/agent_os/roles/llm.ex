@@ -44,8 +44,22 @@ defmodule AOS.AgentOS.Roles.LLM do
 
     case execute_call_raw(nil, current_history, Keyword.put(opts, :tools, permitted_tools(opts))) do
       {:ok, %{"tool_calls" => tool_calls} = meta} when not is_nil(tool_calls) ->
-        new_history = current_history ++ tool_response_messages(tool_calls, notify_pid, opts)
-        call_with_tools(nil, new_history, opts, notify_pid, depth + 1, merge_meta(acc_meta, meta))
+        case tool_response_messages(tool_calls, notify_pid, opts) do
+          {:ok, messages} ->
+            new_history = current_history ++ messages
+
+            call_with_tools(
+              nil,
+              new_history,
+              opts,
+              notify_pid,
+              depth + 1,
+              merge_meta(acc_meta, meta)
+            )
+
+          {:error, reason} ->
+            {:error, reason}
+        end
 
       {:ok, %{"text" => text} = meta} ->
         {:ok, Map.merge(merge_meta(acc_meta, meta), %{text: text})}
@@ -66,12 +80,25 @@ defmodule AOS.AgentOS.Roles.LLM do
   end
 
   defp tool_response_messages(tool_calls, notify_pid, opts) do
-    tool_results =
-      Enum.map(tool_calls, fn tool_call ->
-        {tool_call["id"], tool_call["name"], execute_single_tool(tool_call, notify_pid, opts)}
-      end)
+    Enum.reduce_while(tool_calls, {:ok, []}, fn tool_call, {:ok, acc} ->
+      case execute_single_tool(tool_call, notify_pid, opts) do
+        {:error, reason} -> {:halt, {:error, reason}}
+        result -> {:cont, {:ok, [{tool_call["id"], tool_call["name"], result} | acc]}}
+      end
+    end)
+    |> case do
+      {:ok, tool_results} ->
+        tool_messages =
+          tool_results
+          |> Enum.reverse()
+          |> Enum.map(&tool_result_message/1)
 
-    [{"assistant", %{tool_calls: tool_calls}} | Enum.map(tool_results, &tool_result_message/1)]
+        messages = [{"assistant", %{tool_calls: tool_calls}} | tool_messages]
+        {:ok, messages}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   defp tool_result_message({id, name, result}) do
@@ -82,27 +109,37 @@ defmodule AOS.AgentOS.Roles.LLM do
     Tracer.with_span "LLM.execute_tool", %{attributes: %{"tool.name" => full_name}} do
       parts = String.split(full_name, "__", parts: 2)
 
-    {server_id, tool_name} =
-      case parts do
-        [s, t] -> {s, t}
-        [t] -> {"internal", t}
+      {server_id, tool_name} =
+        case parts do
+          [s, t] -> {s, t}
+          [t] -> {"internal", t}
+        end
+
+      metadata = Tools.metadata_for(server_id, tool_name)
+
+      decision =
+        ApprovalService.request_tool_confirmation(
+          server_id,
+          tool_name,
+          args,
+          notify_pid,
+          metadata,
+          opts
+        )
+
+      case decision do
+        {:pending, request} ->
+          {:error, {:approval_required, request}}
+
+        _decision ->
+          execute_decided_tool(server_id, tool_name, args, metadata, decision, notify_pid, opts)
       end
+    end
+  end
 
-    display_name = "Tool: #{tool_name}"
-
-    metadata = Tools.metadata_for(server_id, tool_name)
-
-    decision =
-      ApprovalService.request_tool_confirmation(
-        server_id,
-        tool_name,
-        args,
-        notify_pid,
-        metadata,
-        opts
-      )
-
+  defp execute_decided_tool(server_id, tool_name, args, metadata, decision, notify_pid, opts) do
     started_at = DateTime.utc_now()
+    display_name = "Tool: #{tool_name}"
 
     if is_pid(notify_pid) and decision == :approved,
       do: send(notify_pid, {:workflow_step_started, display_name})
@@ -140,7 +177,6 @@ defmodule AOS.AgentOS.Roles.LLM do
       do: send(notify_pid, {:workflow_step_completed, display_name, %{result: result}})
 
     result
-    end
   end
 
   defp execute_call(prompt, history, opts) do
@@ -159,8 +195,10 @@ defmodule AOS.AgentOS.Roles.LLM do
   end
 
   defp call_tool_with_retry(server_id, tool_name, args, metadata, attempt) do
+    timeout_ms = Map.get(metadata, :timeout_ms, 60_000)
+
     result =
-      case Manager.call_tool(server_id, tool_name, args) do
+      case Manager.call_tool(server_id, tool_name, args, timeout_ms) do
         {:ok, res} -> {:ok, res}
         {:error, err} -> {:error, err}
       end

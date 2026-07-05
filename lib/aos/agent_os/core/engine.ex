@@ -100,11 +100,18 @@ defmodule AOS.AgentOS.Core.Engine do
 
       {:error, reason} ->
         Logger.error("Node #{node_id} failed: #{inspect(reason)}")
-        Executions.fail_execution(context.execution_id, context, reason)
+
+        if approval_required?(reason),
+          do: Executions.block_execution(context.execution_id, context, reason),
+          else: Executions.fail_execution(context.execution_id, context, reason)
+
         if notify_pid, do: send(notify_pid, {:workflow_error, node_id, reason})
         {:error, node_id, reason, context}
     end
   end
+
+  defp approval_required?({:approval_required, _request}), do: true
+  defp approval_required?(_reason), do: false
 
   defp find_next_node(graph, current_node_id, outcome) do
     transitions = Map.get(graph.transitions, current_node_id, [])

@@ -37,7 +37,7 @@ defmodule AOS.AgentOS.ML.Embedder do
     dot_product = Nx.dot(vec1, vec2)
     norm1 = Nx.LinAlg.norm(vec1)
     norm2 = Nx.LinAlg.norm(vec2)
-    
+
     Nx.divide(dot_product, Nx.multiply(norm1, norm2))
     |> Nx.to_number()
   end

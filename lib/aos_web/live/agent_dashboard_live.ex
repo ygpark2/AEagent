@@ -6,6 +6,8 @@ defmodule AOSWeb.AgentDashboardLive do
   use AOSWeb, :live_view
   require Logger
   alias AOS.AgentOS.DashboardService
+  alias AOS.AgentOS.Executions
+  alias AOS.AgentOS.ToolUse.ApprovalQueue
   alias AOSWeb.Live.Presenters.AgentDashboardPresenter
 
   @impl true
@@ -49,10 +51,25 @@ defmodule AOSWeb.AgentDashboardLive do
     active_right_tab =
       case tab do
         "settings" -> :settings
+        "approvals" -> :approvals
         _ -> :inspection
       end
 
-    {:noreply, assign(socket, active_right_tab: active_right_tab)}
+    {:noreply,
+     assign(socket,
+       active_right_tab: active_right_tab,
+       durable_approvals: DashboardService.durable_approvals()
+     )}
+  end
+
+  @impl true
+  def handle_event("approve_durable_approval", %{"id" => id}, socket) do
+    {:noreply, resolve_durable_approval(socket, id, :approved)}
+  end
+
+  @impl true
+  def handle_event("reject_durable_approval", %{"id" => id}, socket) do
+    {:noreply, resolve_durable_approval(socket, id, :rejected)}
   end
 
   @impl true
@@ -178,6 +195,34 @@ defmodule AOSWeb.AgentDashboardLive do
 
   defp maybe_assign_inspection(socket, nil), do: socket
   defp maybe_assign_inspection(socket, inspection), do: assign(socket, active_diff: inspection)
+
+  defp resolve_durable_approval(socket, id, decision) do
+    result =
+      case decision do
+        :approved -> ApprovalQueue.approve(id, %{decided_by: "dashboard"})
+        :rejected -> ApprovalQueue.reject(id, %{decided_by: "dashboard"})
+      end
+
+    case result do
+      {:ok, request} ->
+        maybe_resume_after_approval(decision, request)
+
+        assign(socket,
+          durable_approvals: DashboardService.durable_approvals(),
+          current_status: "Approval #{request.status}."
+        )
+
+      {:error, reason} ->
+        assign(socket, current_status: "Approval failed: #{inspect(reason)}")
+    end
+  end
+
+  defp maybe_resume_after_approval(:approved, %{execution_id: execution_id})
+       when is_binary(execution_id) do
+    Executions.resume_execution(execution_id, async: true, start_immediately: true)
+  end
+
+  defp maybe_resume_after_approval(_decision, _request), do: :ok
 
   defp default_ui_settings do
     AgentDashboardPresenter.default_ui_settings()
