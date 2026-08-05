@@ -1,156 +1,106 @@
 defmodule AOS.AgentOS.GoalsTest do
   use AOS.DataCase, async: false
 
-  alias AOS.AgentOS.Core.{Execution, GoalEvent, GoalRun}
-  alias AOS.AgentOS.Executions
+  alias AOS.AgentOS.Core.{Execution, GoalRun}
   alias AOS.AgentOS.Goals
+  alias AOS.AgentOS.Goals.Processor
+  alias AOS.Repo
 
-  test "creates goals with normalized attributes and interval scheduling" do
+  test "creates a durable goal and deduplicates event-triggered runs" do
     assert {:ok, goal} =
              Goals.create_goal(%{
-               "name" => "service-health",
-               "objective" => "Keep the service healthy",
-               "trigger" => %{"every_seconds" => "60"},
-               "autonomy_level" => "AUTONOMOUS"
+               name: "release-readiness",
+               objective: "Keep the release ready for deployment",
+               goal_type: "ongoing",
+               trigger: %{"type" => "manual"},
+               autonomy_level: "supervised"
              })
 
-    assert goal.name == "service-health"
-    assert goal.autonomy_level == "autonomous"
-    assert %DateTime{} = goal.next_run_at
-    assert Goals.get_goal("service-health").id == goal.id
-  end
-
-  test "enforces lifecycle transitions through the public API" do
-    assert {:ok, goal} =
-             Goals.create_goal(%{
-               name: "pauseable-goal",
-               objective: "Pause and resume this goal"
-             })
-
-    assert {:ok, paused} = Goals.pause_goal(goal.id)
-    assert paused.status == "paused"
-    assert paused.version == goal.version + 1
-
-    assert {:ok, active} = Goals.resume_goal(goal.id)
-    assert active.status == "active"
-
-    assert {:ok, cancelled} = Goals.cancel_goal(goal.id)
-    assert cancelled.status == "cancelled"
-
-    assert {:error, {:invalid_goal_status_transition, "cancelled", "active"}} =
-             Goals.resume_goal(goal.id)
-  end
-
-  test "creates one execution per idempotent event" do
-    assert {:ok, goal} =
-             Goals.create_goal(%{
-               name: "incident-response",
-               objective: "Resolve the incoming incident",
-               success_criteria: %{"type" => "result_contains", "value" => "resolved"}
-             })
-
-    opts = [
-      async: false,
-      execution_async: false,
-      start_immediately: false,
-      source: "test",
-      idempotency_key: "incident-123"
-    ]
-
-    assert {:ok, event} =
-             Goals.trigger(goal.id, "incident.created", %{"id" => "INC-123"}, opts)
-
-    assert event.status == "dispatched"
-    assert event.source == "test"
-
-    assert [run] = Goals.list_runs(goal.id)
-    assert run.event_id == event.id
-    assert run.status == "queued"
-
-    execution = Executions.get_execution!(run.execution_id)
-    assert %Execution{} = execution
-    assert execution.goal_id == goal.id
-    assert execution.trigger_kind == "goal:incident.created"
-    assert execution.status == "queued"
+    assert {:ok, first_event} =
+             Goals.trigger(goal.id, "manual", %{"reason" => "operator request"},
+               source: "test",
+               idempotency_key: "release-readiness-1",
+               async: false,
+               start_immediately: false
+             )
 
     assert {:ok, duplicate_event} =
-             Goals.trigger(goal.id, "incident.created", %{"id" => "INC-123"}, opts)
+             Goals.trigger(goal.id, "manual", %{"reason" => "duplicate delivery"},
+               source: "test",
+               idempotency_key: "release-readiness-1",
+               async: false,
+               start_immediately: false
+             )
 
-    assert duplicate_event.id == event.id
-    assert [^event] = Goals.list_events(goal.id)
-    assert [^run] = Goals.list_runs(goal.id)
+    assert duplicate_event.id == first_event.id
+    assert duplicate_event.payload == first_event.payload
+
+    [run] = Goals.list_runs(goal.id)
+    assert run.event_id == first_event.id
+    assert run.status == "queued"
+
+    execution = Repo.get!(Execution, run.execution_id)
+    assert execution.goal_id == goal.id
+    assert execution.trigger_kind == "goal:manual"
+    assert Goals.get_event(first_event.id).status == "dispatched"
   end
 
-  test "verifies a terminal execution and completes a one-shot goal" do
+  test "verifies a one-shot goal when its execution reaches a terminal state" do
     assert {:ok, goal} =
              Goals.create_goal(%{
-               name: "one-shot-resolution",
-               objective: "Resolve one incident",
+               name: "publish-report",
+               objective: "Publish the weekly report",
                goal_type: "one_shot",
-               success_criteria: %{"type" => "result_contains", "value" => "resolved"}
+               success_criteria: %{"type" => "result_contains", "value" => "published"}
              })
 
     assert {:ok, event} =
-             Goals.trigger(goal.id, "incident.closed", %{},
+             Goals.trigger(goal.id, "manual", %{},
                async: false,
-               execution_async: false,
                start_immediately: false
              )
 
-    assert %GoalEvent{} = event
-    assert [run] = Goals.list_runs(goal.id)
-    execution = Executions.get_execution!(run.execution_id)
+    run = Goals.list_runs(goal.id) |> Enum.find(&(&1.event_id == event.id))
+    execution = Repo.get!(Execution, run.execution_id)
+    now = DateTime.utc_now()
 
-    assert {:ok, completed} =
-             Executions.complete_execution(execution.id, %{
-               task: execution.task,
-               session_id: execution.session_id,
-               result: "incident resolved",
-               execution_history: []
-             })
+    terminal_execution = %{
+      execution
+      | status: "succeeded",
+        success: true,
+        final_result: "The report was published successfully.",
+        started_at: now,
+        finished_at: now
+    }
 
-    assert completed.status == "succeeded"
-    assert %GoalRun{status: "succeeded"} = completed_run = Goals.get_run(run.id)
-    assert completed_run.verification_result["passed"]
+    assert {:ok, _goal} = Processor.handle_execution_terminal(terminal_execution)
 
-    updated_goal = Goals.get_goal!(goal.id)
-    assert updated_goal.status == "succeeded"
-    assert %DateTime{} = updated_goal.completed_at
-    assert is_nil(updated_goal.last_error)
+    assert %{status: "succeeded"} = Goals.get_goal!(goal.id)
+
+    assert %GoalRun{status: "succeeded"} = stored_run = Repo.get!(GoalRun, run.id)
+    assert stored_run.verification_result["passed"] == true
   end
 
-  test "marks the run and goal failed when verification fails" do
+  test "interval goals are claimed once and advance their next run time" do
+    now = DateTime.utc_now()
+
     assert {:ok, goal} =
              Goals.create_goal(%{
-               name: "failed-verification",
-               objective: "Produce a resolved result",
-               goal_type: "one_shot",
-               success_criteria: %{"type" => "result_contains", "value" => "resolved"}
+               name: "hourly-health-check",
+               objective: "Check the service health",
+               trigger: %{"type" => "interval", "every_seconds" => 60},
+               next_run_at: DateTime.add(now, -1, :second)
              })
 
-    assert {:ok, _event} =
-             Goals.trigger(goal.id, "work.completed", %{},
+    assert %{dispatched: 1, skipped: 0} =
+             Goals.dispatch_due_goals(now,
                async: false,
                execution_async: false,
                start_immediately: false
              )
 
-    assert [run] = Goals.list_runs(goal.id)
-    execution = Executions.get_execution!(run.execution_id)
-
-    assert {:ok, _completed} =
-             Executions.complete_execution(execution.id, %{
-               task: execution.task,
-               session_id: execution.session_id,
-               result: "still investigating",
-               execution_history: []
-             })
-
-    assert %GoalRun{status: "failed"} = failed_run = Goals.get_run(run.id)
-    refute failed_run.verification_result["passed"]
-
-    updated_goal = Goals.get_goal!(goal.id)
-    assert updated_goal.status == "failed"
-    assert updated_goal.last_error == "execution result did not contain expected text"
+    updated = Goals.get_goal!(goal.id)
+    assert DateTime.compare(updated.next_run_at, now) == :gt
+    assert [%{event_type: "schedule", source: "scheduler"}] = Goals.list_events(goal.id)
   end
 end

@@ -76,6 +76,7 @@ defmodule AOSWeb.Router do
       post "/channels/slack/commands", SlackController, :create
       post "/channels/slack/interactions", SlackController, :interact
       post "/webhooks/executions", WebhookController, :create
+      post "/webhooks/goals/:id/events", WebhookController, :goal_event
     end
   end
 

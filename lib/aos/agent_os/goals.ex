@@ -116,7 +116,7 @@ defmodule AOS.AgentOS.Goals do
     do: {:error, "goal event payload must be a map"}
 
   @doc "Dispatches all due interval goals using an atomic database claim."
-  def dispatch_due_goals(now \\ DateTime.utc_now()) do
+  def dispatch_due_goals(now \\ DateTime.utc_now(), opts \\ []) do
     due_goals =
       Goal
       |> where([g], g.status == "active")
@@ -132,8 +132,11 @@ defmodule AOS.AgentOS.Goals do
           }
 
           case trigger(goal.id, "schedule", event_payload,
-                 source: "scheduler",
-                 idempotency_key: "schedule:#{goal.id}:#{DateTime.to_iso8601(slot)}"
+                 source: Keyword.get(opts, :source, "scheduler"),
+                 idempotency_key: "schedule:#{goal.id}:#{DateTime.to_iso8601(slot)}",
+                 async: Keyword.get(opts, :async, true),
+                 execution_async: Keyword.get(opts, :execution_async, true),
+                 start_immediately: Keyword.get(opts, :start_immediately, true)
                ) do
             {:ok, _event} -> %{acc | dispatched: acc.dispatched + 1}
             {:error, _reason} -> %{acc | skipped: acc.skipped + 1}

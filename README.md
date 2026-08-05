@@ -70,4 +70,38 @@ mix agent.run "최신 아키텍처 요약보고서 작성"
 mix agent.strategies --domain general
 ```
 
+### Durable Goal 프로세서
+
+Goal은 한 번의 실행이 아니라, 여러 이벤트와 실행을 통해 달성하는 지속적인 목적입니다.
+Goal 정의, 이벤트, 실행 시도, 완료 검증 결과가 DB에 저장됩니다.
+
+```bash
+# Goal 생성
+mix agent.goal create release-readiness "배포 가능한 상태를 유지한다" \
+  --goal-type ongoing --autonomy-level supervised
+
+# Goal 목록 조회
+mix agent.goal list
+
+# Goal 이벤트 발생
+mix agent.goal trigger release-readiness work_item.created \
+  --payload '{"source":"monitor","severity":"high"}'
+```
+
+API로는 인증된 `/api/v1/goals`와 `/api/v1/goals/:id/events`를 사용할 수 있고,
+외부 시스템은 `WEBHOOK_SHARED_SECRET`을 사용하는
+`POST /api/v1/webhooks/goals/:id/events`로 이벤트를 보낼 수 있습니다.
+`idempotency_key`를 보내면 동일 이벤트의 중복 실행을 방지합니다.
+
+interval Goal은 다음과 같이 정의할 수 있습니다.
+
+```json
+{
+  "name": "hourly-health-check",
+  "objective": "서비스 상태를 확인하고 이상이 있으면 보고한다",
+  "trigger": {"type": "interval", "every_seconds": 3600},
+  "success_criteria": {"type": "execution_status", "value": "succeeded"}
+}
+```
+
 이제 **자율 진화형 에이전트**는 당신의 가장 똑똑하고 신뢰할 수 있는 파트너가 될 것입니다.

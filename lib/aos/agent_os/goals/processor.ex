@@ -17,19 +17,20 @@ defmodule AOS.AgentOS.Goals.Processor do
   end
 
   def process(event_id, opts \\ []) do
-    with {:ok, event} <- claim_event(event_id),
-         {:ok, goal} <- get_goal(event.goal_id),
-         {:ok, run} <- create_run(goal, event),
-         {:ok, execution} <- enqueue_execution(goal, event, run, opts),
-         {:ok, run} <- link_execution(run, execution),
-         {:ok, _event} <- mark_event(event, "dispatched", nil) do
-      if execution.status in ["succeeded", "failed", "blocked"],
-        do: handle_execution_terminal(execution)
+    with {:ok, event} <- claim_event(event_id) do
+      case get_goal(event.goal_id) do
+        {:ok, goal} ->
+          process_claimed_event(event, goal, opts)
 
-      {:ok, run}
+        {:error, :goal_not_active} ->
+          mark_event(event, "ignored", "goal is not active")
+          {:ok, :ignored}
+
+        {:error, reason} ->
+          handle_processing_error(event_id, reason, {:error, reason})
+      end
     else
       {:error, :already_processed} = result -> result
-      {:error, :goal_not_active} = result -> result
       {:error, reason} = result -> handle_processing_error(event_id, reason, result)
     end
   end
@@ -64,7 +65,7 @@ defmodule AOS.AgentOS.Goals.Processor do
          run_status <- terminal_run_status(execution.status, verification),
          {:ok, _run} <- update_run(run, run_status, verification, execution),
          {:ok, _event} <- mark_event_by_run(run) do
-      reconcile_goal(goal, run_status, verification)
+      reconcile_goal(goal, run, run_status, verification)
     else
       nil -> :ok
       {:error, reason} -> {:error, reason}
@@ -103,6 +104,20 @@ defmodule AOS.AgentOS.Goals.Processor do
 
       nil ->
         {:error, :goal_not_found}
+    end
+  end
+
+  defp process_claimed_event(event, goal, opts) do
+    with {:ok, run} <- create_run(goal, event),
+         {:ok, execution} <- enqueue_execution(goal, event, run, opts),
+         {:ok, run} <- link_execution(run, execution),
+         {:ok, _event} <- mark_event(event, "dispatched", nil) do
+      if execution.status in ["succeeded", "failed", "blocked"],
+        do: handle_execution_terminal(execution)
+
+      {:ok, run}
+    else
+      {:error, reason} -> handle_processing_error(event.id, reason, {:error, reason})
     end
   end
 
@@ -210,7 +225,7 @@ defmodule AOS.AgentOS.Goals.Processor do
     |> Repo.update()
   end
 
-  defp reconcile_goal(goal, run_status, verification) do
+  defp reconcile_goal(goal, run, run_status, verification) do
     attrs = %{
       last_run_at: DateTime.utc_now(),
       last_error:
@@ -235,8 +250,58 @@ defmodule AOS.AgentOS.Goals.Processor do
           attrs
       end
 
-    Goals.update_goal(goal.id, attrs)
+    with {:ok, updated_goal} <- Goals.update_goal(goal.id, attrs) do
+      maybe_schedule_retry(updated_goal, run, run_status, verification)
+    end
   end
+
+  defp maybe_schedule_retry(goal, run, "failed", verification) do
+    max_attempts = retry_max_attempts(goal.retry_policy)
+
+    if max_attempts && run.attempt < max_attempts do
+      with {:ok, active_goal} <-
+             Goals.update_goal(goal.id, %{status: "active", completed_at: nil}),
+           {:ok, _event} <-
+             Goals.trigger(
+               active_goal.id,
+               "retry",
+               %{
+                 "source_run_id" => run.id,
+                 "failed_attempt" => run.attempt,
+                 "reason" => get_in(verification, [:details, :reason])
+               },
+               source: "goal_processor",
+               idempotency_key: "retry:#{run.id}",
+               async: true
+             ) do
+        {:ok, active_goal}
+      end
+    else
+      {:ok, goal}
+    end
+  end
+
+  defp maybe_schedule_retry(goal, _run, _run_status, _verification), do: {:ok, goal}
+
+  defp retry_max_attempts(policy) when is_map(policy) do
+    value = Map.get(policy, "max_attempts") || Map.get(policy, :max_attempts)
+
+    case value do
+      value when is_integer(value) and value > 1 ->
+        value
+
+      value when is_binary(value) ->
+        case Integer.parse(value) do
+          {attempts, ""} when attempts > 1 -> attempts
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp retry_max_attempts(_policy), do: nil
 
   defp terminal_run_status("succeeded", %{passed: true}), do: "succeeded"
   defp terminal_run_status("succeeded", _verification), do: "failed"
