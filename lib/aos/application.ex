@@ -8,6 +8,7 @@ defmodule AOS.Application do
   alias AOS.AgentOS.ConfigValidator
   alias AOS.AgentOS.MCP.Manager
   alias AOS.AgentOS.Runtime.{AIPool, AIRuntime, Scheduler, SessionSupervisor}
+  alias AOS.AgentOS.Goals.Processor, as: GoalProcessor
   alias AOS.AgentOS.TaskSupervisor
   alias AOS.Repo
 
@@ -37,6 +38,8 @@ defmodule AOS.Application do
       SessionSupervisor,
       # Background tasks for API/CLI-triggered executions
       {Task.Supervisor, name: TaskSupervisor},
+      # Durable goal event processor
+      GoalProcessor,
       # Start MCP Manager
       Manager,
       # Start the Autonomous Scheduler

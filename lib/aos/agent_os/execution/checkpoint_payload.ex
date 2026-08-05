@@ -18,7 +18,16 @@ defmodule AOS.AgentOS.Execution.CheckpointPayload do
         estimated_cost: Map.get(context, :estimated_cost, 0.0),
         llm_usage: Map.get(context, :llm_usage, []),
         selected_skills: Map.get(context, :selected_skills, []),
-        skills: Map.get(context, :skills, [])
+        skills: Map.get(context, :skills, []),
+        goal_id: Map.get(context, :goal_id),
+        goal_event_id: Map.get(context, :goal_event_id),
+        goal_run_id: Map.get(context, :goal_run_id),
+        goal_name: Map.get(context, :goal_name),
+        goal_objective: Map.get(context, :goal_objective),
+        goal_success_criteria: Map.get(context, :goal_success_criteria),
+        goal_constraints: Map.get(context, :goal_constraints),
+        goal_context: Map.get(context, :goal_context),
+        goal_event: Map.get(context, :goal_event)
       }
     }
   end

@@ -83,6 +83,13 @@ defmodule AOSWeb.Router do
     pipe_through [:api, :api_deserializer, :api_auth]
 
     scope "/v1", V1, as: :v1 do
+      resources "/goals", GoalController, only: [:index, :show, :create, :update]
+      post "/goals/:id/events", GoalController, :trigger
+      get "/goals/:id/events", GoalController, :events
+      get "/goals/:id/runs", GoalController, :runs
+      post "/goals/:id/pause", GoalController, :pause
+      post "/goals/:id/resume", GoalController, :resume
+      post "/goals/:id/cancel", GoalController, :cancel
       post "/executions/:id/resume", ExecutionController, :resume
       post "/executions/:id/retry", ExecutionController, :retry
       get "/executions/:id/replay", ExecutionController, :replay

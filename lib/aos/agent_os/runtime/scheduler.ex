@@ -5,6 +5,7 @@ defmodule AOS.AgentOS.Runtime.Scheduler do
   use GenServer
   require Logger
   alias AOS.AgentOS.Core.{Architect, Engine}
+  alias AOS.AgentOS.Goals
 
   def start_link(_opts) do
     GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
@@ -28,6 +29,8 @@ defmodule AOS.AgentOS.Runtime.Scheduler do
 
   @impl true
   def handle_info(:tick, state) do
+    Goals.dispatch_due_goals()
+
     Enum.each(state.tasks, fn task ->
       Logger.info("Autonomous Wakeup: Executing scheduled task '#{task.name}'...")
 

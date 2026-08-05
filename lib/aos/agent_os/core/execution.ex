@@ -12,6 +12,7 @@ defmodule AOS.AgentOS.Core.Execution do
 
   schema "agent_executions" do
     field :session_id, Ecto.UUID
+    field :goal_id, Ecto.UUID
     field :source_execution_id, Ecto.UUID
     field :workflow_id, Ecto.UUID
     field :domain, :string
@@ -40,6 +41,7 @@ defmodule AOS.AgentOS.Core.Execution do
       :domain,
       :task,
       :session_id,
+      :goal_id,
       :source_execution_id,
       :workflow_id,
       :status,

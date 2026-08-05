@@ -14,6 +14,15 @@ defmodule AOS.AgentOS.Execution.ResumeContext do
     :checkpoint_artifact_id,
     :resume_mode,
     :resume_from_node,
+    :goal_id,
+    :goal_event_id,
+    :goal_run_id,
+    :goal_name,
+    :goal_objective,
+    :goal_success_criteria,
+    :goal_constraints,
+    :goal_context,
+    :goal_event,
     history: [],
     llm_usage: [],
     selected_skills: [],
@@ -38,7 +47,16 @@ defmodule AOS.AgentOS.Execution.ResumeContext do
       skills: fetch(context, "skills", []),
       checkpoint_artifact_id: fetch(context, "checkpoint_artifact_id"),
       resume_mode: fetch(context, "resume_mode"),
-      resume_from_node: normalize_node(fetch(context, "resume_from_node"))
+      resume_from_node: normalize_node(fetch(context, "resume_from_node")),
+      goal_id: fetch(context, "goal_id"),
+      goal_event_id: fetch(context, "goal_event_id"),
+      goal_run_id: fetch(context, "goal_run_id"),
+      goal_name: fetch(context, "goal_name"),
+      goal_objective: fetch(context, "goal_objective"),
+      goal_success_criteria: fetch(context, "goal_success_criteria", %{}),
+      goal_constraints: fetch(context, "goal_constraints", %{}),
+      goal_context: fetch(context, "goal_context", %{}),
+      goal_event: fetch(context, "goal_event", %{})
     }
   end
 
@@ -55,7 +73,16 @@ defmodule AOS.AgentOS.Execution.ResumeContext do
       skills: context.skills,
       checkpoint_artifact_id: context.checkpoint_artifact_id,
       resume_mode: context.resume_mode,
-      resume_from_node: context.resume_from_node
+      resume_from_node: context.resume_from_node,
+      goal_id: context.goal_id,
+      goal_event_id: context.goal_event_id,
+      goal_run_id: context.goal_run_id,
+      goal_name: context.goal_name,
+      goal_objective: context.goal_objective,
+      goal_success_criteria: context.goal_success_criteria,
+      goal_constraints: context.goal_constraints,
+      goal_context: context.goal_context,
+      goal_event: context.goal_event
     }
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
     |> Map.new()
@@ -78,6 +105,15 @@ defmodule AOS.AgentOS.Execution.ResumeContext do
   defp normalize_key("checkpoint_artifact_id"), do: :checkpoint_artifact_id
   defp normalize_key("resume_mode"), do: :resume_mode
   defp normalize_key("resume_from_node"), do: :resume_from_node
+  defp normalize_key("goal_id"), do: :goal_id
+  defp normalize_key("goal_event_id"), do: :goal_event_id
+  defp normalize_key("goal_run_id"), do: :goal_run_id
+  defp normalize_key("goal_name"), do: :goal_name
+  defp normalize_key("goal_objective"), do: :goal_objective
+  defp normalize_key("goal_success_criteria"), do: :goal_success_criteria
+  defp normalize_key("goal_constraints"), do: :goal_constraints
+  defp normalize_key("goal_context"), do: :goal_context
+  defp normalize_key("goal_event"), do: :goal_event
   defp normalize_key(key) when is_binary(key), do: key
 
   defp normalize_history(history) when is_list(history) do

@@ -44,6 +44,7 @@ defmodule AOS.AgentOS.Execution.Replay do
     %{
       id: execution.id,
       session_id: execution.session_id,
+      goal_id: execution.goal_id,
       workflow_id: execution.workflow_id,
       domain: execution.domain,
       task: execution.task,

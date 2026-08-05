@@ -6,6 +6,7 @@ defmodule AOS.AgentOS.Executions do
   alias AOS.AgentOS.Config
   alias AOS.AgentOS.Core.{Architect, Artifact, DelegationTrace, Engine, Execution, Session}
   alias AOS.AgentOS.Evolution.{QualityEvaluator, StrategyEvaluator}
+  alias AOS.AgentOS.Goals.Processor, as: GoalProcessor
   alias AOS.AgentOS.TaskSupervisor
 
   alias AOS.AgentOS.Execution.{
@@ -32,6 +33,7 @@ defmodule AOS.AgentOS.Executions do
              task: task,
              domain: "general",
              session_id: session.id,
+             goal_id: Keyword.get(opts, :goal_id),
              strategy_id: Keyword.get(opts, :strategy_id),
              source_execution_id: Keyword.get(opts, :source_execution_id),
              workflow_id: Keyword.get(opts, :workflow_id),
@@ -156,6 +158,7 @@ defmodule AOS.AgentOS.Executions do
            ) do
       update_session_status(execution.session_id, "running", execution.id)
       append_execution_event(execution, "execution.running", "executions", %{})
+      GoalProcessor.handle_execution_started(execution)
       {:ok, execution}
     end
   end
@@ -171,6 +174,8 @@ defmodule AOS.AgentOS.Executions do
         "quality_score" => execution.quality_score,
         "fitness_score" => execution.fitness_score
       })
+
+      GoalProcessor.handle_execution_terminal(execution)
 
       ArtifactRecorder.record_final_artifacts(execution, context)
 
@@ -198,6 +203,8 @@ defmodule AOS.AgentOS.Executions do
         "reason" => reason_to_string(reason)
       })
 
+      GoalProcessor.handle_execution_terminal(execution)
+
       ArtifactRecorder.record_final_artifacts(execution, context)
 
       StrategyEvaluator.record_outcome(
@@ -223,6 +230,8 @@ defmodule AOS.AgentOS.Executions do
       append_execution_event(execution, "execution.failed", "executions", %{
         "reason" => reason_to_string(reason)
       })
+
+      GoalProcessor.handle_execution_terminal(execution)
 
       ArtifactRecorder.record_final_artifacts(execution, context)
 
@@ -309,6 +318,7 @@ defmodule AOS.AgentOS.Executions do
       task: Map.get(context, :task, "unknown"),
       domain: Map.get(context, :domain, "general"),
       session_id: Map.get(context, :session_id),
+      goal_id: Map.get(context, :goal_id),
       autonomy_level: Map.get(context, :autonomy_level, Autonomy.default_level()),
       strategy_id: Map.get(context, :strategy_id),
       workflow_id: Map.get(context, :workflow_id)
