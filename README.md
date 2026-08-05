@@ -1,4 +1,9 @@
+<div align="center">
+
 # 자율 진화형 에이전트 (Autonomous Evolutionary Agent) 🧬
+  
+[English 🇬🇧](README_en.md) | [Korean  🇰🇷](README.md)
+</div>
 
 엘릭서(Elixir/OTP) 기반의 **Outcome-Driven Agent Graph** 아키텍처를 채택하여, 고정된 명령을 수행하는 것을 넘어 스스로 사고하고, 결과를 검증하며, 경험을 통해 진화하는 차세대 인공지능 에이전트 시스템입니다.
 
