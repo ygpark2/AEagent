@@ -70,12 +70,36 @@ defmodule AOS.AgentOS.Evolution.StrategyMutator do
         %{"to" => "reporter"} = transition -> %{transition | "to" => "critic"}
         transition -> transition
       end)
+      |> Enum.reject(fn
+        %{"from" => "critic", "on" => "fail"} -> true
+        _transition -> false
+      end)
       |> append_unique(%{"from" => "critic", "on" => "pass", "to" => "reporter"})
-      |> append_unique(%{"from" => "critic", "on" => "fail", "to" => "reporter"})
+      |> append_unique(%{
+        "from" => "critic",
+        "on" => "fail",
+        "to" => refinement_target(blueprint, "critic")
+      })
 
     blueprint
     |> Map.put("nodes", nodes)
     |> Map.put("transitions", transitions)
+  end
+
+  defp refinement_target(blueprint, evaluator_id) do
+    nodes = Map.get(blueprint, "nodes", %{})
+
+    Enum.find(["thinker", "worker"], &Map.has_key?(nodes, &1)) ||
+      blueprint
+      |> Map.get("transitions", [])
+      |> Enum.find_value(fn
+        %{"to" => ^evaluator_id, "from" => from} ->
+          if from not in [evaluator_id, "reporter"], do: from
+
+        _transition ->
+          nil
+      end) ||
+      "reporter"
   end
 
   defp simplify_to_worker_reporter(blueprint) do

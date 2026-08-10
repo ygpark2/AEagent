@@ -15,6 +15,7 @@ defmodule AOS.AgentOS.Core.Execution do
     field :goal_id, Ecto.UUID
     field :source_execution_id, Ecto.UUID
     field :workflow_id, Ecto.UUID
+    field :engine, :string, default: "graph"
     field :domain, :string
     field :task, :string
     field :status, :string, default: "queued"
@@ -44,6 +45,7 @@ defmodule AOS.AgentOS.Core.Execution do
       :goal_id,
       :source_execution_id,
       :workflow_id,
+      :engine,
       :status,
       :trigger_kind,
       :autonomy_level,

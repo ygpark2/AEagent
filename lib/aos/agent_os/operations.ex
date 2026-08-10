@@ -21,6 +21,7 @@ defmodule AOS.AgentOS.Operations do
         evolution: %{
           enabled: Config.evolution_enabled?(),
           mutation_threshold: Config.evolution_mutation_threshold(),
+          max_refinement_attempts: Config.max_refinement_attempts(),
           archive_min_usage: Config.evolution_archive_min_usage(),
           archive_success_rate: Config.evolution_archive_success_rate(),
           experiment_min_usage: Config.evolution_experiment_min_usage(),
@@ -33,7 +34,8 @@ defmodule AOS.AgentOS.Operations do
           domain_success_cap: Config.domain_success_cap()
         },
         workspace_root: Config.workspace_root(),
-        agent_runtime_type: Config.runtime_type()
+        agent_runtime_type: Config.runtime_type(),
+        dag_engine_enabled: Config.dag_engine_enabled?()
       }
     }
   end

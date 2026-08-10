@@ -93,6 +93,7 @@ defmodule AOSWeb.Router do
       post "/goals/:id/cancel", GoalController, :cancel
       post "/executions/:id/resume", ExecutionController, :resume
       post "/executions/:id/retry", ExecutionController, :retry
+      post "/executions/:id/cancel", ExecutionController, :cancel
       get "/executions/:id/replay", ExecutionController, :replay
       post "/approvals/:id/approve", ApprovalController, :approve
       post "/approvals/:id/reject", ApprovalController, :reject

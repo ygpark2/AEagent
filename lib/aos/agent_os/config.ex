@@ -31,6 +31,10 @@ defmodule AOS.AgentOS.Config do
   def evolution_quality_evaluator_enabled?,
     do: get(:evolution_quality_evaluator_enabled, false) == true
 
+  def max_refinement_attempts, do: get(:max_refinement_attempts, 3)
+
+  def dag_engine_enabled?, do: get(:dag_engine_enabled, false) == true
+
   def sync_async_executions?, do: get(:sync_async_executions, false) == true
 
   def slack_response_dispatcher,

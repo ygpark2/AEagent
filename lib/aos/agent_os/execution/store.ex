@@ -44,6 +44,7 @@ defmodule AOS.AgentOS.Execution.Store do
       task: "unknown",
       status: "queued",
       trigger_kind: "manual",
+      engine: "graph",
       autonomy_level: Autonomy.default_level(),
       success: false,
       execution_log: %{steps: []}

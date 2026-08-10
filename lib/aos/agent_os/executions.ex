@@ -4,9 +4,20 @@ defmodule AOS.AgentOS.Executions do
   """
   alias AOS.AgentOS.Autonomy
   alias AOS.AgentOS.Config
-  alias AOS.AgentOS.Core.{Architect, Artifact, DelegationTrace, Engine, Execution, Session}
+
+  alias AOS.AgentOS.Core.{
+    Architect,
+    Artifact,
+    DelegationTrace,
+    Engine,
+    Execution,
+    Session,
+    Workflow
+  }
+
   alias AOS.AgentOS.Evolution.{QualityEvaluator, StrategyEvaluator}
   alias AOS.AgentOS.Goals.Processor, as: GoalProcessor
+  alias AOS.AgentOS.Orchestration.DAGEngine
   alias AOS.AgentOS.TaskSupervisor
 
   alias AOS.AgentOS.Execution.{
@@ -18,12 +29,15 @@ defmodule AOS.AgentOS.Executions do
     Store
   }
 
+  alias AOS.Repo
+
   def enqueue(task, opts \\ []) when is_binary(task) do
     async? = Keyword.get(opts, :async, true)
     start_immediately? = Keyword.get(opts, :start_immediately, true)
     notify_pid = Keyword.get(opts, :notify)
     initial_context = Keyword.get(opts, :initial_context, %{})
     autonomy_level = Autonomy.normalize_level(Keyword.get(opts, :autonomy_level))
+    engine = execution_engine(Keyword.get(opts, :engine))
 
     with {:ok, session} <-
            resolve_session(task, Keyword.put(opts, :autonomy_level, autonomy_level)),
@@ -38,6 +52,7 @@ defmodule AOS.AgentOS.Executions do
              source_execution_id: Keyword.get(opts, :source_execution_id),
              workflow_id: Keyword.get(opts, :workflow_id),
              trigger_kind: Keyword.get(opts, :trigger_kind, "manual"),
+             engine: engine,
              autonomy_level: autonomy_level
            }) do
       append_execution_event(execution, "execution.queued", "executions", %{
@@ -55,6 +70,7 @@ defmodule AOS.AgentOS.Executions do
         initial_context: initial_context,
         notify_pid: notify_pid,
         autonomy_level: autonomy_level,
+        engine: engine,
         async?: async?,
         start_immediately?: start_immediately?
       })
@@ -99,7 +115,8 @@ defmodule AOS.AgentOS.Executions do
         workflow_id: execution.workflow_id,
         trigger_kind: "resume",
         initial_context: checkpoint_context,
-        autonomy_level: execution.autonomy_level
+        autonomy_level: execution.autonomy_level,
+        engine: execution.engine
       )
     else
       {:error, "execution #{execution_id} is not resumable from status #{execution.status}"}
@@ -116,7 +133,8 @@ defmodule AOS.AgentOS.Executions do
       source_execution_id: execution.id,
       workflow_id: execution.workflow_id,
       trigger_kind: "retry",
-      autonomy_level: execution.autonomy_level
+      autonomy_level: execution.autonomy_level,
+      engine: execution.engine
     )
   end
 
@@ -134,6 +152,16 @@ defmodule AOS.AgentOS.Executions do
 
   def list_delegation_traces(parent_execution_id),
     do: Store.list_delegation_traces(parent_execution_id)
+
+  def get_dag_run_by_execution(execution_id),
+    do: AOS.AgentOS.Orchestration.DAGStore.get_run_by_execution(execution_id)
+
+  def cancel_dag_execution(execution_id) do
+    case get_dag_run_by_execution(execution_id) do
+      nil -> {:error, :dag_run_not_found}
+      run -> DAGEngine.cancel(run.id)
+    end
+  end
 
   def list_events(execution_id), do: Store.list_events(execution_id)
 
@@ -251,6 +279,7 @@ defmodule AOS.AgentOS.Executions do
   def run_existing_execution(execution_id, task, opts \\ []) do
     notify_pid = Keyword.get(opts, :notify)
     graph_builder = Keyword.get(opts, :graph_builder, &Architect.build_graph/2)
+    execution = get_execution!(execution_id)
 
     stored_initial_context =
       CheckpointService.initial_context_for_run(
@@ -274,23 +303,33 @@ defmodule AOS.AgentOS.Executions do
     initial_context = runtime_initial_context
     autonomy_level = Autonomy.normalize_level(Keyword.get(opts, :autonomy_level))
     graph = graph_builder.(task, notify: notify_pid)
-    domain = graph.domain || HistoryService.infer_domain(graph)
-    StrategyEvaluator.mark_used(graph.strategy_id)
+    workflow = workflow_for_execution(execution)
 
-    Engine.run(
-      graph,
+    dag_definition =
+      if execution.engine == "dag", do: workflow_definition(workflow, graph), else: graph
+
+    domain = definition_domain(dag_definition, graph)
+
+    if match?(%AOS.AgentOS.Core.Graph{}, graph),
+      do: StrategyEvaluator.mark_used(graph.strategy_id)
+
+    runtime_context =
       Map.merge(initial_context, %{
         task: task,
         history: history,
         execution_id: execution_id,
-        source_execution_id: get_execution!(execution_id).source_execution_id,
+        source_execution_id: execution.source_execution_id,
         session_id: session_id,
         autonomy_level: autonomy_level,
         strategy_id: graph.strategy_id,
-        domain: domain
-      }),
-      notify: notify_pid
-    )
+        domain: domain,
+        engine: execution.engine || "graph"
+      })
+
+    case execution.engine || "graph" do
+      "dag" -> DAGEngine.run(dag_definition, runtime_context, dag_options(workflow, notify_pid))
+      _ -> Engine.run(graph, runtime_context, notify: notify_pid)
+    end
   end
 
   def record_step_artifact(context, node_id, next_node_id) do
@@ -320,6 +359,7 @@ defmodule AOS.AgentOS.Executions do
       session_id: Map.get(context, :session_id),
       goal_id: Map.get(context, :goal_id),
       autonomy_level: Map.get(context, :autonomy_level, Autonomy.default_level()),
+      engine: Map.get(context, :engine, "graph"),
       strategy_id: Map.get(context, :strategy_id),
       workflow_id: Map.get(context, :workflow_id)
     }
@@ -428,6 +468,7 @@ defmodule AOS.AgentOS.Executions do
          initial_context: initial_context,
          notify_pid: notify_pid,
          autonomy_level: autonomy_level,
+         engine: engine,
          async?: async?,
          start_immediately?: true
        }) do
@@ -437,7 +478,8 @@ defmodule AOS.AgentOS.Executions do
         history: history,
         session_id: session.id,
         initial_context: Map.put_new(initial_context, :workflow_id, execution.workflow_id),
-        autonomy_level: autonomy_level
+        autonomy_level: autonomy_level,
+        engine: engine
       )
     end
 
@@ -457,4 +499,40 @@ defmodule AOS.AgentOS.Executions do
     runner.()
     {:ok, Store.get_execution!(execution.id)}
   end
+
+  defp execution_engine(nil), do: if(Config.dag_engine_enabled?(), do: "dag", else: "graph")
+
+  defp execution_engine(engine) when engine in [:dag, "dag"],
+    do: if(Config.dag_engine_enabled?(), do: "dag", else: "graph")
+
+  defp execution_engine(_engine), do: "graph"
+
+  defp workflow_for_execution(%Execution{workflow_id: nil}), do: nil
+
+  defp workflow_for_execution(%Execution{workflow_id: workflow_id}),
+    do: Repo.get(Workflow, workflow_id)
+
+  defp workflow_definition(%Workflow{graph: graph}, _fallback)
+       when is_map(graph) and map_size(graph) > 0,
+       do: graph
+
+  defp workflow_definition(_workflow, fallback), do: fallback
+
+  defp definition_domain(%{domain: domain}, _fallback) when not is_nil(domain), do: domain
+  defp definition_domain(%{"domain" => domain}, _fallback) when not is_nil(domain), do: domain
+
+  defp definition_domain(_definition, graph),
+    do: graph.domain || HistoryService.infer_domain(graph)
+
+  defp dag_options(nil, notify_pid), do: [notify: notify_pid]
+
+  defp dag_options(workflow, notify_pid) do
+    [notify: notify_pid]
+    |> maybe_put_option(:timeout_ms, workflow.timeout_ms)
+    |> maybe_put_option(:retry_policy, workflow.retry_policy)
+    |> maybe_put_option(:metadata, workflow.metadata)
+  end
+
+  defp maybe_put_option(opts, _key, nil), do: opts
+  defp maybe_put_option(opts, key, value), do: Keyword.put(opts, key, value)
 end

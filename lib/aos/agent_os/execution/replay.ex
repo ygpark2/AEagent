@@ -46,6 +46,7 @@ defmodule AOS.AgentOS.Execution.Replay do
       session_id: execution.session_id,
       goal_id: execution.goal_id,
       workflow_id: execution.workflow_id,
+      engine: execution.engine,
       domain: execution.domain,
       task: execution.task,
       status: execution.status,

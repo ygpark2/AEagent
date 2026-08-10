@@ -63,13 +63,15 @@ defmodule AOSWeb.V1.ExecutionController do
     start_immediately? = Map.get(params, "start_immediately", true) == true
     session_id = Map.get(params, "session_id")
     autonomy_level = Map.get(params, "autonomy_level")
+    engine = Map.get(params, "engine")
 
     with {:ok, execution} <-
            Executions.enqueue(task,
              async: !wait?,
              start_immediately: start_immediately?,
              session_id: session_id,
-             autonomy_level: autonomy_level
+             autonomy_level: autonomy_level,
+             engine: engine
            ) do
       conn
       |> put_status(:accepted)
@@ -102,6 +104,14 @@ defmodule AOSWeb.V1.ExecutionController do
       conn
       |> put_status(:accepted)
       |> json(%{data: Executions.serialize_execution(execution)})
+    end
+  end
+
+  def cancel(conn, %{"id" => id}) do
+    with {:ok, _event} <- Executions.cancel_dag_execution(id) do
+      conn
+      |> put_status(:accepted)
+      |> json(%{data: %{execution_id: id, status: "cancellation_requested"}})
     end
   end
 

@@ -55,6 +55,53 @@ defmodule AOS.AgentOS.Core.EngineTest do
       assert Enum.at(history, 3).outcome == :pass
     end
 
+    test "automatically rewrites after a critic failure when no fail transition exists" do
+      graph =
+        Graph.new(:automatic_refinement)
+        |> Graph.add_node(:worker, MockWorker)
+        |> Graph.add_node(:critic, MockEvaluator)
+        |> Graph.set_initial(:worker)
+        |> Graph.add_transition(:worker, :success, :critic)
+        |> Graph.add_transition(:critic, :pass, nil)
+
+      assert {:ok, final_context} =
+               Engine.run(graph, %{task: "Automatic refinement", force_fail: true})
+
+      assert Enum.map(final_context.execution_history, &{&1.node_id, &1.outcome}) == [
+               {:worker, :success},
+               {:critic, :fail},
+               {:worker, :success},
+               {:critic, :pass}
+             ]
+
+      assert final_context.refinement_attempts == 1
+    end
+
+    test "fails instead of looping forever after refinement attempts are exhausted" do
+      previous = Application.get_env(:aos, :max_refinement_attempts)
+      Application.put_env(:aos, :max_refinement_attempts, 1)
+
+      on_exit(fn ->
+        if is_nil(previous),
+          do: Application.delete_env(:aos, :max_refinement_attempts),
+          else: Application.put_env(:aos, :max_refinement_attempts, previous)
+      end)
+
+      graph =
+        Graph.new(:bounded_refinement)
+        |> Graph.add_node(:worker, MockWorker)
+        |> Graph.add_node(:critic, AOS.Test.Support.Nodes.AlwaysFailEvaluator)
+        |> Graph.set_initial(:worker)
+        |> Graph.add_transition(:worker, :success, :critic)
+
+      assert {:error, :critic, :quality_refinement_exhausted, context} =
+               Engine.run(graph, %{task: "Bounded refinement"})
+
+      assert context.refinement_attempts == 1
+      assert length(context.execution_history) == 4
+      assert Repo.get!(AOS.AgentOS.Core.Execution, context.execution_id).status == "failed"
+    end
+
     test "marks execution failed when the graph points to a missing node" do
       graph =
         Graph.new(:test_missing_node)

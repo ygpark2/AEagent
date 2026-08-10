@@ -104,4 +104,10 @@ interval Goal은 다음과 같이 정의할 수 있습니다.
 }
 ```
 
+### 병렬 DAG 오케스트레이션
+
+기존 `Engine` 기반 단일 graph 실행은 기본값으로 유지되며, `DAG_ENGINE_ENABLED=true`일 때 `Executions.enqueue/2`가 새 `DAGEngine`을 병행 사용합니다. 특정 호출에서 `engine: :graph`를 지정하면 기존 경로를 선택할 수 있습니다.
+
+새 DAG는 `AOS.AgentOS.Orchestration.run/3` 또는 백그라운드 `dispatch/3`로 실행할 수 있습니다. DAG node/edge/run/event 상태는 DB에 저장되고, fan-out/fan-in join barrier, retry/timeout/cancellation, run idempotency, `MetaCoordinator` event protocol, ArtifactRecorder와 기존 policy gate를 공유합니다.
+
 이제 **자율 진화형 에이전트**는 당신의 가장 똑똑하고 신뢰할 수 있는 파트너가 될 것입니다.

@@ -5,8 +5,7 @@ defmodule AOS.AgentOS.Core.Nodes.Delegator do
   """
   @behaviour AOS.AgentOS.Core.Node
   alias AOS.AgentOS.Autonomy
-  alias AOS.AgentOS.Core.{Architect, Engine}
-  alias AOS.AgentOS.Executions
+  alias AOS.AgentOS.Orchestration.NodeDispatcher
   require Logger
   @impl true
   def run(context, _opts) do
@@ -50,7 +49,9 @@ defmodule AOS.AgentOS.Core.Nodes.Delegator do
       targets
       |> Enum.with_index()
       |> Task.async_stream(
-        fn {target, index} -> run_child_execution(context, target, index, depth) end,
+        fn {target, index} ->
+          NodeDispatcher.run_child_execution(context, target, index, depth)
+        end,
         ordered: true,
         timeout: 120_000,
         max_concurrency: max(length(targets), 1)
@@ -61,63 +62,6 @@ defmodule AOS.AgentOS.Core.Nodes.Delegator do
       end)
 
     merge_delegation_results(context, results, depth)
-  end
-
-  defp run_child_execution(context, target, index, depth) do
-    notify_pid = Map.get(context, :notify)
-    graph_builder = Map.get(context, :delegation_graph_builder, &Architect.build_graph/2)
-    runner = Map.get(context, :delegation_runner, &Engine.run/3)
-
-    {:ok, execution} =
-      Executions.enqueue(target,
-        async: false,
-        start_immediately: false,
-        session_id: Map.get(context, :session_id),
-        autonomy_level: Map.get(context, :autonomy_level)
-      )
-
-    {:ok, trace} =
-      Executions.create_delegation_trace(%{
-        session_id: Map.get(context, :session_id),
-        parent_execution_id: Map.get(context, :execution_id),
-        child_execution_id: execution.id,
-        task: target,
-        status: "running",
-        position: index
-      })
-
-    sub_graph = graph_builder.(target, notify: notify_pid)
-
-    sub_context = %{
-      task: target,
-      history: Map.get(context, :history, []),
-      notify: notify_pid,
-      delegation_depth: depth + 1,
-      cost_usd: 0.0,
-      session_id: Map.get(context, :session_id),
-      autonomy_level: Map.get(context, :autonomy_level, Autonomy.default_level()),
-      selected_skills: Map.get(context, :selected_skills, []),
-      skills: Map.get(context, :skills, []),
-      execution_id: execution.id
-    }
-
-    case runner.(sub_graph, sub_context, notify: notify_pid) do
-      {:ok, child_context} ->
-        summary = summarize_result(Map.get(child_context, :result, "Sub-task completed."))
-
-        Executions.update_delegation_trace(trace.id, %{
-          status: "succeeded",
-          result_summary: summary
-        })
-
-        {:ok, execution.id,
-         %{task: target, result: Map.get(child_context, :result), summary: summary}}
-
-      {:error, node_id, reason, _child_context} ->
-        message = "Delegation failed at #{node_id}: #{inspect(reason)}"
-        Executions.update_delegation_trace(trace.id, %{status: "failed", error_message: message})
-        {:error, execution.id, %{task: target, reason: reason, message: message}}
-    end
   end
 
   defp merge_delegation_results(context, results, depth) do
@@ -190,11 +134,5 @@ defmodule AOS.AgentOS.Core.Nodes.Delegator do
     Enum.map_join(successes, "\n\n", fn success ->
       "Task: #{success.task}\nResult: #{success.result || success.summary}"
     end)
-  end
-
-  defp summarize_result(result) do
-    result
-    |> to_string()
-    |> String.slice(0, 240)
   end
 end

@@ -72,6 +72,8 @@ defmodule AOS.AgentOS.Core.Architect do
 
     [Strategy]
     Combine layers efficiently. For critical tasks, always include 'critic'. 
+    When 'critic' returns FAIL, route back to the worker/thinker for revision with the feedback;
+    do not route directly to 'reporter' until the critic returns PASS.
     If deep analysis is needed, prefer 'collaborator' over 'thinker'.
 
     [Reference Patterns]

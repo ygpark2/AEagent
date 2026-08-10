@@ -21,7 +21,7 @@ defmodule AOS.AgentOS.Evolution.StrategyMutatorTest do
              "transitions"
            ]
 
-    assert %{"from" => "critic", "on" => "fail", "to" => "reporter"} in mutated[
+    assert %{"from" => "critic", "on" => "fail", "to" => "thinker"} in mutated[
              "transitions"
            ]
   end
