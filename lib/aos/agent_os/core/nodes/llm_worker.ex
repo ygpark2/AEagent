@@ -33,7 +33,9 @@ defmodule AOS.AgentOS.Core.Nodes.LLMWorker do
            source_execution_id: Map.get(context, :source_execution_id),
            session_id: Map.get(context, :session_id),
            workflow_id: Map.get(context, :workflow_id),
-           selected_skills: selected_skills
+           selected_skills: selected_skills,
+           harness_manifest: Map.get(context, :harness_manifest),
+           harness_budget_state: Map.get(context, :harness_budget_state, %{})
          ) do
       {:ok, %{text: result} = meta} ->
         usage = Map.get(meta, "usage", %{})
@@ -44,6 +46,7 @@ defmodule AOS.AgentOS.Core.Nodes.LLMWorker do
           |> Map.put(:result, result)
           |> Map.put(:last_outcome, :success)
           |> accumulate_budget(additional_cost, usage)
+          |> Map.put(:harness_budget_state, Map.get(meta, "harness_budget_state", %{}))
           |> Map.put(:history, history ++ [{"user", prompt}, {"assistant", result}])
 
         {:ok, updated_context}

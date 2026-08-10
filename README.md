@@ -110,4 +110,33 @@ interval Goal은 다음과 같이 정의할 수 있습니다.
 
 새 DAG는 `AOS.AgentOS.Orchestration.run/3` 또는 백그라운드 `dispatch/3`로 실행할 수 있습니다. DAG node/edge/run/event 상태는 DB에 저장되고, fan-out/fan-in join barrier, retry/timeout/cancellation, run idempotency, `MetaCoordinator` event protocol, ArtifactRecorder와 기존 policy gate를 공유합니다.
 
+### Agent Harness 계약
+
+모든 실행은 `harness/manifest.json`을 기본 계약으로 해석하는 명시적
+하네스 episode를 가질 수 있습니다. episode에는 resolved manifest,
+context/tool/permission budget, 표준 trace, failure attribution,
+intervention 기록, deterministic verification 결과가 함께 저장됩니다.
+
+작업별 계약은 실행 시 overlay할 수 있습니다.
+
+```elixir
+Executions.enqueue("배포 준비 상태 점검",
+  initial_context: %{
+    harness: %{
+      "verification" => %{"profile" => "elixir"},
+      "budgets" => %{"max_tool_calls" => 20}
+    }
+  }
+)
+```
+
+`harness/manifest.json`의 `verification.profiles.elixir`는 format,
+compile, test를 순서대로 실행하고, 실패 시 해당 실행은 성공으로 종료되지
+않습니다. `/api/v1/executions/:id`와 replay 응답에서
+`harness_episode`·`harness_traces`를 확인할 수 있습니다.
+
+repository entropy와 golden principle은 `harness/golden_principles.json`에
+선언되어 있으며, 주기적 memory cleanup과 `AOS.AgentOS.Operations.doctor/0`
+에서 자동 감사됩니다.
+
 이제 **자율 진화형 에이전트**는 당신의 가장 똑똑하고 신뢰할 수 있는 파트너가 될 것입니다.

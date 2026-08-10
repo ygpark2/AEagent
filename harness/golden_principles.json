@@ -1,0 +1,22 @@
+[
+  {
+    "id": "required_project_contract",
+    "type": "required_files",
+    "paths": ["README.md", "mix.exs", "config/config.exs"],
+    "severity": "error"
+  },
+  {
+    "id": "no_crash_dumps_in_source",
+    "type": "forbidden_files",
+    "paths": ["erl_crash.dump", "core", "*.beam"],
+    "roots": ["lib", "test", "config", "harness"],
+    "severity": "error"
+  },
+  {
+    "id": "no_debugger_calls_in_runtime",
+    "type": "forbidden_regex",
+    "roots": ["lib"],
+    "pattern": "\\b(dbg|IO\\.inspect)\\s*\\(",
+    "severity": "warning"
+  }
+]

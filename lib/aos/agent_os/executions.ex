@@ -16,6 +16,7 @@ defmodule AOS.AgentOS.Executions do
   }
 
   alias AOS.AgentOS.Evolution.{QualityEvaluator, StrategyEvaluator}
+  alias AOS.AgentOS.Harness
   alias AOS.AgentOS.Goals.Processor, as: GoalProcessor
   alias AOS.AgentOS.Orchestration.DAGEngine
   alias AOS.AgentOS.TaskSupervisor
@@ -54,7 +55,13 @@ defmodule AOS.AgentOS.Executions do
              trigger_kind: Keyword.get(opts, :trigger_kind, "manual"),
              engine: engine,
              autonomy_level: autonomy_level
-           }) do
+           }),
+         {:ok, _episode} <-
+           Harness.ensure_episode(
+             execution,
+             Map.put(initial_context, :task, task),
+             harness_options(opts)
+           ) do
       append_execution_event(execution, "execution.queued", "executions", %{
         "task" => task,
         "trigger_kind" => execution.trigger_kind
@@ -148,6 +155,18 @@ defmodule AOS.AgentOS.Executions do
 
   def list_artifacts(execution_id), do: Store.list_artifacts(execution_id)
 
+  def get_harness_episode(execution_id), do: Harness.get_episode(execution_id)
+
+  def list_harness_traces(execution_id, opts \\ []) do
+    case get_harness_episode(execution_id) do
+      nil -> []
+      episode -> Harness.list_traces(episode.id, opts)
+    end
+  end
+
+  def serialize_harness_episode(episode), do: Harness.serialize_episode(episode)
+  def serialize_harness_trace(trace), do: Harness.serialize_trace(trace)
+
   def get_artifact(id), do: Store.get_artifact(id)
 
   def list_delegation_traces(parent_execution_id),
@@ -171,8 +190,13 @@ defmodule AOS.AgentOS.Executions do
 
   def ensure_execution(%{execution_id: id} = context) when is_binary(id) do
     case get_execution(id) do
-      %Execution{} = execution -> {:ok, execution, context}
-      nil -> create_and_attach_execution(context)
+      %Execution{} = execution ->
+        with {:ok, episode} <- Harness.ensure_episode(execution, context) do
+          {:ok, execution, put_harness_context(context, episode)}
+        end
+
+      nil ->
+        create_and_attach_execution(context)
     end
   end
 
@@ -186,6 +210,7 @@ defmodule AOS.AgentOS.Executions do
            ) do
       update_session_status(execution.session_id, "running", execution.id)
       append_execution_event(execution, "execution.running", "executions", %{})
+      Harness.mark_running(execution.id)
       GoalProcessor.handle_execution_started(execution)
       {:ok, execution}
     end
@@ -194,6 +219,13 @@ defmodule AOS.AgentOS.Executions do
   def complete_execution(id, context) do
     context = QualityEvaluator.maybe_evaluate(context, "succeeded")
 
+    case Harness.verify(context) do
+      {:ok, _report, verified_context} -> do_complete_execution(id, verified_context)
+      {:error, reason, _report, failed_context} -> fail_execution(id, failed_context, reason)
+    end
+  end
+
+  defp do_complete_execution(id, context) do
     with {:ok, execution} <-
            Store.update_execution(id, execution_attrs_from_context(context, "succeeded", nil)) do
       update_session_status(execution.session_id, "completed", execution.id)
@@ -216,12 +248,14 @@ defmodule AOS.AgentOS.Executions do
 
       Notifier.notify_terminal_event(context, execution)
       Notifier.dispatch_slack_response(execution)
+      Harness.finish(execution.id, "succeeded", context)
       {:ok, execution}
     end
   end
 
   def block_execution(id, context, reason) do
     context = QualityEvaluator.maybe_evaluate(context, "blocked")
+    Harness.record_failure(id, reason, context)
 
     with {:ok, execution} <-
            Store.update_execution(id, execution_attrs_from_context(context, "blocked", reason)) do
@@ -244,12 +278,14 @@ defmodule AOS.AgentOS.Executions do
 
       Notifier.notify_terminal_event(context, execution)
       Notifier.dispatch_slack_response(execution)
+      Harness.finish(execution.id, "blocked", context, reason)
       {:ok, execution}
     end
   end
 
   def fail_execution(id, context, reason) do
     context = QualityEvaluator.maybe_evaluate(context, "failed")
+    Harness.record_failure(id, reason, context)
 
     with {:ok, execution} <-
            Store.update_execution(id, execution_attrs_from_context(context, "failed", reason)) do
@@ -272,6 +308,7 @@ defmodule AOS.AgentOS.Executions do
 
       Notifier.notify_terminal_event(context, execution)
       Notifier.dispatch_slack_response(execution)
+      Harness.finish(execution.id, "failed", context, reason)
       {:ok, execution}
     end
   end
@@ -326,6 +363,23 @@ defmodule AOS.AgentOS.Executions do
         engine: execution.engine || "graph"
       })
 
+    harness_manifest =
+      case Harness.manifest_for_execution(execution.id) do
+        {:ok, manifest} ->
+          manifest
+
+        _ ->
+          case Harness.manifest(runtime_context) do
+            {:ok, manifest} -> manifest
+            _ -> AOS.AgentOS.Harness.Manifest.default()
+          end
+      end
+
+    runtime_context =
+      runtime_context
+      |> Map.put(:harness_manifest, harness_manifest)
+      |> Map.put_new(:harness_budget_state, AOS.AgentOS.Harness.Budget.initial_state())
+
     case execution.engine || "graph" do
       "dag" -> DAGEngine.run(dag_definition, runtime_context, dag_options(workflow, notify_pid))
       _ -> Engine.run(graph, runtime_context, notify: notify_pid)
@@ -370,7 +424,9 @@ defmodule AOS.AgentOS.Executions do
         |> Map.put(:execution_id, execution.id)
         |> Map.put_new(:session_id, execution.session_id)
 
-      {:ok, execution, updated_context}
+      with {:ok, episode} <- Harness.ensure_episode(execution, updated_context) do
+        {:ok, execution, put_harness_context(updated_context, episode)}
+      end
     end
   end
 
@@ -535,4 +591,15 @@ defmodule AOS.AgentOS.Executions do
 
   defp maybe_put_option(opts, _key, nil), do: opts
   defp maybe_put_option(opts, key, value), do: Keyword.put(opts, key, value)
+
+  defp harness_options(opts),
+    do: Keyword.take(opts, [:manifest_path, :harness_manifest, :success_criteria, :constraints])
+
+  defp put_harness_context(context, nil), do: context
+
+  defp put_harness_context(context, episode) do
+    context
+    |> Map.put_new(:harness_manifest, episode.manifest)
+    |> Map.put_new(:harness_budget_state, AOS.AgentOS.Harness.Budget.initial_state())
+  end
 end

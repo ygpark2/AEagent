@@ -2,7 +2,7 @@ defmodule AOS.AgentOS.Operations do
   @moduledoc """
   Operational diagnostics and metrics aggregation helpers.
   """
-  alias AOS.AgentOS.{Config, Operations.Store}
+  alias AOS.AgentOS.{Config, Harness, Operations.Store}
   alias AOS.AgentOS.Operations.Config, as: OperationsConfig
 
   def doctor do
@@ -35,7 +35,13 @@ defmodule AOS.AgentOS.Operations do
         },
         workspace_root: Config.workspace_root(),
         agent_runtime_type: Config.runtime_type(),
-        dag_engine_enabled: Config.dag_engine_enabled?()
+        dag_engine_enabled: Config.dag_engine_enabled?(),
+        harness: %{
+          enabled: Config.harness_enabled?(),
+          manifest_path: Config.harness_manifest_path(),
+          entropy_audit_enabled: Config.harness_entropy_audit_enabled?(),
+          entropy_audit: Harness.audit_entropy()
+        }
       }
     }
   end

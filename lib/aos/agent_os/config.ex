@@ -35,6 +35,14 @@ defmodule AOS.AgentOS.Config do
 
   def dag_engine_enabled?, do: get(:dag_engine_enabled, false) == true
 
+  def harness_enabled?, do: get(:harness_enabled, true) == true
+  def harness_manifest_path, do: get(:harness_manifest_path, "harness/manifest.json")
+
+  def harness_verification_timeout_ms,
+    do: get(:harness_verification_timeout_ms, 120_000)
+
+  def harness_entropy_audit_enabled?, do: get(:harness_entropy_audit_enabled, true) == true
+
   def sync_async_executions?, do: get(:sync_async_executions, false) == true
 
   def slack_response_dispatcher,

@@ -45,6 +45,13 @@ defmodule AOSWeb.V1.ExecutionController do
           |> Tools.list_audits()
           |> Enum.map(&Tools.serialize_audit/1)
 
+        harness_episode = Executions.get_harness_episode(execution.id)
+
+        harness_traces =
+          execution.id
+          |> Executions.list_harness_traces()
+          |> Enum.map(&Executions.serialize_harness_trace/1)
+
         json(conn, %{
           data: %{
             execution: Executions.serialize_execution(execution),
@@ -52,7 +59,9 @@ defmodule AOSWeb.V1.ExecutionController do
             latest_checkpoint: replay.latest_checkpoint,
             artifacts: artifacts,
             delegation_traces: delegation_traces,
-            tool_audits: tool_audits
+            tool_audits: tool_audits,
+            harness_episode: maybe_serialize_harness_episode(harness_episode),
+            harness_traces: harness_traces
           }
         })
     end
@@ -129,4 +138,9 @@ defmodule AOSWeb.V1.ExecutionController do
       :error -> 20
     end
   end
+
+  defp maybe_serialize_harness_episode(nil), do: nil
+
+  defp maybe_serialize_harness_episode(episode),
+    do: Executions.serialize_harness_episode(episode)
 end

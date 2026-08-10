@@ -10,6 +10,8 @@ defmodule AOS.AgentOS.Core.Engine do
   alias AOS.AgentOS.Core.Nodes.{LLMEvaluator, LLMWorker}
   alias AOS.AgentOS.Execution.CheckpointService
   alias AOS.AgentOS.Executions
+  alias AOS.AgentOS.Harness
+  alias AOS.AgentOS.Harness.Budget
 
   def run(%Graph{} = graph, initial_context, opts \\ []) do
     Logger.info("Starting Agent Graph execution: #{graph.id}")
@@ -44,16 +46,30 @@ defmodule AOS.AgentOS.Core.Engine do
   defp execute_node(graph, node_id, context, notify_pid) do
     node_module = Map.get(graph.nodes, node_id)
     context = Map.put(context, :graph_nodes, graph.nodes)
+    trace_key = "graph:node:#{node_id}:#{length(Map.get(context, :execution_history, []))}"
 
     if notify_pid, do: send(notify_pid, {:workflow_step_started, node_id, node_module})
+    trace_node(context, node_id, "started", trace_key, %{node_module: inspect(node_module)})
 
-    case PolicyGate.check(context, node_id) do
-      {:ok, updated_context} ->
-        perform_node_execution(graph, node_id, node_module, updated_context, notify_pid)
+    case Budget.check_context(context) do
+      {:ok, checked_context} ->
+        case PolicyGate.check(checked_context, node_id) do
+          {:ok, updated_context} ->
+            perform_node_execution(graph, node_id, node_module, updated_context, notify_pid)
+
+          {:error, reason} ->
+            Logger.error("Execution blocked by policy: #{inspect(reason)}")
+            trace_node(context, node_id, "failed", trace_key, %{reason: inspect(reason)})
+            Executions.block_execution(context.execution_id, context, reason)
+            if notify_pid, do: send(notify_pid, {:workflow_error, node_id, reason})
+            {:error, node_id, reason, context}
+        end
 
       {:error, reason} ->
-        Logger.error("Execution blocked by policy: #{inspect(reason)}")
-        Executions.block_execution(context.execution_id, context, reason)
+        Logger.error("Execution stopped by harness budget: #{inspect(reason)}")
+        trace_node(context, node_id, "failed", trace_key, %{reason: inspect(reason)})
+        Harness.record_failure(context.execution_id, reason, context)
+        Executions.fail_execution(context.execution_id, context, reason)
         if notify_pid, do: send(notify_pid, {:workflow_error, node_id, reason})
         {:error, node_id, reason, context}
     end
@@ -62,6 +78,7 @@ defmodule AOS.AgentOS.Core.Engine do
   defp perform_node_execution(_graph, node_id, nil, context, notify_pid) do
     reason = "Node #{node_id} not found in graph"
     Logger.error(reason)
+    trace_node(context, node_id, "failed", "graph:node:#{node_id}:missing", %{reason: reason})
     Executions.fail_execution(context.execution_id, context, reason)
     if notify_pid, do: send(notify_pid, {:workflow_error, node_id, reason})
     {:error, node_id, reason, context}
@@ -73,6 +90,14 @@ defmodule AOS.AgentOS.Core.Engine do
     case node_module.run(context, []) do
       {:ok, updated_context} ->
         outcome = Map.get(updated_context, :last_outcome, :success)
+
+        trace_node(
+          updated_context,
+          node_id,
+          "completed",
+          "graph:node:#{node_id}:#{length(Map.get(context, :execution_history, []))}",
+          %{outcome: outcome}
+        )
 
         # Send BOTH node_id and node_module so UI can decide how to render
         if notify_pid,
@@ -105,6 +130,14 @@ defmodule AOS.AgentOS.Core.Engine do
       {:error, reason} ->
         Logger.error("Node #{node_id} failed: #{inspect(reason)}")
 
+        trace_node(
+          context,
+          node_id,
+          "failed",
+          "graph:node:#{node_id}:#{length(Map.get(context, :execution_history, []))}",
+          %{reason: inspect(reason)}
+        )
+
         if approval_required?(reason),
           do: Executions.block_execution(context.execution_id, context, reason),
           else: Executions.fail_execution(context.execution_id, context, reason)
@@ -116,6 +149,18 @@ defmodule AOS.AgentOS.Core.Engine do
 
   defp approval_required?({:approval_required, _request}), do: true
   defp approval_required?(_reason), do: false
+
+  defp trace_node(context, node_id, phase, idempotency_key, payload) do
+    if execution_id = Map.get(context, :execution_id) do
+      Harness.trace(
+        execution_id,
+        "node",
+        phase,
+        Map.put(payload, :node_id, to_string(node_id)),
+        idempotency_key: "#{idempotency_key}:#{phase}"
+      )
+    end
+  end
 
   defp next_step(graph, node_id, node_module, :fail, context) do
     if refinement_node?(node_id, node_module) do

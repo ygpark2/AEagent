@@ -7,6 +7,7 @@ defmodule AOS.AgentOS.Core.MemoryManager do
   alias AOS.AgentOS.Config
   alias AOS.AgentOS.Core.{MemoryRetentionPolicy, MemoryStore, NodeRegistry}
   alias AOS.AgentOS.Evolution.StrategyRegistry
+  alias AOS.AgentOS.Harness.EntropyAuditor
   require Logger
 
   # Once a day
@@ -37,6 +38,9 @@ defmodule AOS.AgentOS.Core.MemoryManager do
 
     # 4. Archive low-performing evolved strategies
     prune_strategies()
+
+    # 5. Audit repository entropy against the explicit harness contract
+    audit_repository_entropy()
 
     schedule_cleanup()
     {:noreply, state}
@@ -91,5 +95,19 @@ defmodule AOS.AgentOS.Core.MemoryManager do
   defp prune_strategies do
     result = StrategyRegistry.prune()
     Logger.info("[MemoryManager] Archived #{result.archived} low-performing strategies.")
+  end
+
+  defp audit_repository_entropy do
+    if Config.harness_entropy_audit_enabled?() do
+      report = EntropyAuditor.audit(Config.workspace_root())
+
+      if report.status == "passed" do
+        Logger.info("[MemoryManager] Harness entropy audit passed.")
+      else
+        Logger.warning(
+          "[MemoryManager] Harness entropy audit findings: #{inspect(report.findings)}"
+        )
+      end
+    end
   end
 end

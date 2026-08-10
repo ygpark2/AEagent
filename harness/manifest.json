@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "name": "aos-agent-harness",
+  "budgets": {
+    "max_context_chars": 120000,
+    "max_tool_calls": 40,
+    "max_shell_commands": 10,
+    "max_high_risk_tools": 5,
+    "max_permission_denials": 3
+  },
+  "tools": {
+    "allow": [],
+    "deny": []
+  },
+  "permissions": {
+    "workspace_root": null,
+    "require_approval_for": ["high"]
+  },
+  "verification": {
+    "enabled": true,
+    "profile": "default",
+    "required": false,
+    "commands": [],
+    "profiles": {
+      "elixir": {
+        "required": true,
+        "commands": [
+          {"command": "mix", "args": ["format", "--check-formatted"]},
+          {"command": "mix", "args": ["compile", "--warnings-as-errors"]},
+          {"command": "mix", "args": ["test"]}
+        ]
+      }
+    }
+  },
+  "entropy": {
+    "enabled": true,
+    "mode": "report",
+    "principles_path": "harness/golden_principles.json"
+  },
+  "tracing": {"version": 1}
+}

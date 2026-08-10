@@ -4,6 +4,8 @@ defmodule AOS.AgentOS.Orchestration.NodeDispatcher do
   alias AOS.AgentOS.Autonomy
   alias AOS.AgentOS.Core.{Architect, Engine, PolicyGate}
   alias AOS.AgentOS.Executions
+  alias AOS.AgentOS.Harness
+  alias AOS.AgentOS.Harness.Budget
   alias AOS.AgentOS.Orchestration.DAGEngine
   alias AOS.AgentOS.TaskSupervisor
   require Logger
@@ -16,16 +18,23 @@ defmodule AOS.AgentOS.Orchestration.NodeDispatcher do
     policy_check = Keyword.get(opts, :policy_check, &PolicyGate.check/2)
     cancel_check = Keyword.get(opts, :cancel_check, fn -> false end)
 
-    do_run_node(
-      node_id,
-      node_module,
-      context,
-      max_attempts,
-      timeout_ms,
-      policy_check,
-      cancel_check,
-      1
-    )
+    case Budget.check_context(context) do
+      {:ok, checked_context} ->
+        do_run_node(
+          node_id,
+          node_module,
+          checked_context,
+          max_attempts,
+          timeout_ms,
+          policy_check,
+          cancel_check,
+          1
+        )
+
+      {:error, reason} ->
+        Harness.record_failure(Map.get(context, :execution_id), reason, context)
+        {:error, reason, context, 1}
+    end
   end
 
   def run_child_execution(context, target, index, depth, opts \\ []) do
@@ -51,7 +60,10 @@ defmodule AOS.AgentOS.Orchestration.NodeDispatcher do
              start_immediately: false,
              session_id: Map.get(context, :session_id),
              autonomy_level: Map.get(context, :autonomy_level),
-             engine: child_engine
+             engine: child_engine,
+             harness_manifest: Map.get(context, :harness_manifest),
+             success_criteria: Map.get(context, :success_criteria),
+             constraints: Map.get(context, :constraints)
            ),
          {:ok, trace} <-
            Executions.create_delegation_trace(%{
@@ -110,7 +122,10 @@ defmodule AOS.AgentOS.Orchestration.NodeDispatcher do
          cancel_check,
          attempt
        ) do
+    trace_node(context, node_id, "started", %{attempt: attempt})
+
     if cancel_check.() do
+      trace_node(context, node_id, "cancelled", %{attempt: attempt})
       {:cancelled, context, attempt}
     else
       do_run_node_after_policy(
@@ -138,14 +153,17 @@ defmodule AOS.AgentOS.Orchestration.NodeDispatcher do
        ) do
     case policy_check.(context, node_id) do
       {:error, reason} ->
+        trace_node(context, node_id, "failed", %{attempt: attempt, reason: inspect(reason)})
         {:error, reason, context, attempt}
 
       {:ok, checked_context} ->
         case execute_once(node_module, checked_context, timeout_ms, cancel_check) do
           {:ok, updated_context} ->
+            trace_node(updated_context, node_id, "completed", %{attempt: attempt})
             {:ok, updated_context, attempt}
 
           {:cancelled, cancelled_context} ->
+            trace_node(cancelled_context, node_id, "cancelled", %{attempt: attempt})
             {:cancelled, cancelled_context, attempt}
 
           {:error, reason} when attempt < max_attempts ->
@@ -165,6 +183,11 @@ defmodule AOS.AgentOS.Orchestration.NodeDispatcher do
             )
 
           {:error, reason} ->
+            trace_node(checked_context, node_id, "failed", %{
+              attempt: attempt,
+              reason: inspect(reason)
+            })
+
             {:error, reason, checked_context, attempt}
         end
     end
@@ -212,5 +235,13 @@ defmodule AOS.AgentOS.Orchestration.NodeDispatcher do
     result
     |> to_string()
     |> String.slice(0, 240)
+  end
+
+  defp trace_node(context, node_id, phase, payload) do
+    if execution_id = Map.get(context, :execution_id) do
+      Harness.trace(execution_id, "node", phase, Map.put(payload, :node_id, to_string(node_id)),
+        idempotency_key: "node:#{node_id}:#{phase}:#{Map.get(payload, :attempt, 0)}"
+      )
+    end
   end
 end

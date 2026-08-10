@@ -33,6 +33,14 @@ defmodule AOS.AgentOS.Execution.Replay do
         execution.id
         |> Tools.list_audits()
         |> Enum.map(&Tools.serialize_audit/1),
+      harness_episode:
+        execution.id
+        |> Executions.get_harness_episode()
+        |> maybe_serialize_harness_episode(),
+      harness_traces:
+        execution.id
+        |> Executions.list_harness_traces()
+        |> Enum.map(&Executions.serialize_harness_trace/1),
       events:
         execution.id
         |> Executions.list_events()
@@ -68,6 +76,11 @@ defmodule AOS.AgentOS.Execution.Replay do
       updated_at: execution.updated_at
     }
   end
+
+  defp maybe_serialize_harness_episode(nil), do: nil
+
+  defp maybe_serialize_harness_episode(episode),
+    do: AOS.AgentOS.Harness.serialize_episode(episode)
 
   defp strategy_snapshot(nil), do: nil
 

@@ -37,6 +37,8 @@ defmodule AOS.AgentOS.Roles.Executor do
            execution_id: Map.get(input, :execution_id),
            session_id: Map.get(input, :session_id),
            selected_skills: skills,
+           harness_manifest: Map.get(input, :harness_manifest),
+           harness_budget_state: Map.get(input, :harness_budget_state, %{}),
            use_tools: true
          ) do
       {:ok, %{text: result} = meta} ->
@@ -46,6 +48,7 @@ defmodule AOS.AgentOS.Roles.Executor do
         {:ok,
          input
          |> Map.merge(%{execution_result: result})
+         |> Map.put(:harness_budget_state, Map.get(meta, "harness_budget_state", %{}))
          |> accumulate_budget(additional_cost, usage)}
 
       {:error, reason} ->

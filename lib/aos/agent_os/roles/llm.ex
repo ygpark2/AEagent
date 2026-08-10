@@ -7,6 +7,8 @@ defmodule AOS.AgentOS.Roles.LLM do
   alias AOS.AgentOS.MCP.Manager
   alias AOS.AgentOS.Tools
   alias AOS.AgentOS.ToolUse.{ApprovalService, AuditService}
+  alias AOS.AgentOS.Harness
+  alias AOS.AgentOS.Harness.Budget
 
   require OpenTelemetry.Tracer, as: Tracer
 
@@ -45,13 +47,13 @@ defmodule AOS.AgentOS.Roles.LLM do
     case execute_call_raw(nil, current_history, Keyword.put(opts, :tools, permitted_tools(opts))) do
       {:ok, %{"tool_calls" => tool_calls} = meta} when not is_nil(tool_calls) ->
         case tool_response_messages(tool_calls, notify_pid, opts) do
-          {:ok, messages} ->
+          {:ok, messages, next_opts} ->
             new_history = current_history ++ messages
 
             call_with_tools(
               nil,
               new_history,
-              opts,
+              next_opts,
               notify_pid,
               depth + 1,
               merge_meta(acc_meta, meta)
@@ -62,7 +64,10 @@ defmodule AOS.AgentOS.Roles.LLM do
         end
 
       {:ok, %{"text" => text} = meta} ->
-        {:ok, Map.merge(merge_meta(acc_meta, meta), %{text: text})}
+        {:ok,
+         merge_meta(acc_meta, meta)
+         |> Map.put(:text, text)
+         |> Map.put("harness_budget_state", Keyword.get(opts, :harness_budget_state, %{}))}
 
       {:error, reason} ->
         {:error, reason}
@@ -80,21 +85,24 @@ defmodule AOS.AgentOS.Roles.LLM do
   end
 
   defp tool_response_messages(tool_calls, notify_pid, opts) do
-    Enum.reduce_while(tool_calls, {:ok, []}, fn tool_call, {:ok, acc} ->
-      case execute_single_tool(tool_call, notify_pid, opts) do
-        {:error, reason} -> {:halt, {:error, reason}}
-        result -> {:cont, {:ok, [{tool_call["id"], tool_call["name"], result} | acc]}}
+    Enum.reduce_while(tool_calls, {:ok, [], opts}, fn tool_call, {:ok, acc, current_opts} ->
+      case execute_single_tool(tool_call, notify_pid, current_opts) do
+        {:error, reason} ->
+          {:halt, {:error, reason}}
+
+        {:ok, result, next_opts} ->
+          {:cont, {:ok, [{tool_call["id"], tool_call["name"], result} | acc], next_opts}}
       end
     end)
     |> case do
-      {:ok, tool_results} ->
+      {:ok, tool_results, next_opts} ->
         tool_messages =
           tool_results
           |> Enum.reverse()
           |> Enum.map(&tool_result_message/1)
 
         messages = [{"assistant", %{tool_calls: tool_calls}} | tool_messages]
-        {:ok, messages}
+        {:ok, messages, next_opts}
 
       {:error, reason} ->
         {:error, reason}
@@ -117,22 +125,35 @@ defmodule AOS.AgentOS.Roles.LLM do
 
       metadata = Tools.metadata_for(server_id, tool_name)
 
-      decision =
-        ApprovalService.request_tool_confirmation(
-          server_id,
-          tool_name,
-          args,
-          notify_pid,
-          metadata,
-          opts
-        )
+      with {:ok, budgeted_opts} <- Budget.before_tool(opts, server_id, tool_name, metadata) do
+        decision =
+          ApprovalService.request_tool_confirmation(
+            server_id,
+            tool_name,
+            args,
+            notify_pid,
+            metadata,
+            budgeted_opts
+          )
 
-      case decision do
-        {:pending, request} ->
-          {:error, {:approval_required, request}}
+        case decision do
+          {:pending, request} ->
+            {:error, {:approval_required, request}}
 
-        _decision ->
-          execute_decided_tool(server_id, tool_name, args, metadata, decision, notify_pid, opts)
+          _decision ->
+            result =
+              execute_decided_tool(
+                server_id,
+                tool_name,
+                args,
+                metadata,
+                decision,
+                notify_pid,
+                budgeted_opts
+              )
+
+            {:ok, result, Budget.after_tool(budgeted_opts, result)}
+        end
       end
     end
   end
@@ -171,6 +192,18 @@ defmodule AOS.AgentOS.Roles.LLM do
       args,
       result,
       started_at
+    )
+
+    Harness.trace(
+      Keyword.get(opts, :execution_id),
+      "tool",
+      "completed",
+      %{
+        server_id: server_id,
+        tool_name: tool_name,
+        status: result.status,
+        attempts: result.attempts
+      }
     )
 
     if notify_pid,

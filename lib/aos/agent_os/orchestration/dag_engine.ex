@@ -4,6 +4,7 @@ defmodule AOS.AgentOS.Orchestration.DAGEngine do
   alias AOS.AgentOS.Core.{DAGRun, Graph, PolicyGate}
   alias AOS.AgentOS.Execution.ArtifactRecorder
   alias AOS.AgentOS.Executions
+  alias AOS.AgentOS.Harness
 
   alias AOS.AgentOS.Orchestration.{
     DAGDefinition,
@@ -120,7 +121,8 @@ defmodule AOS.AgentOS.Orchestration.DAGEngine do
              metadata: Keyword.get(opts, :metadata, %{})
            }),
          {:ok, _nodes} <- create_persisted_nodes(run, dag),
-         {:ok, _edges} <- create_persisted_edges(run, dag) do
+         {:ok, _edges} <- create_persisted_edges(run, dag),
+         {:ok, _episode} <- Harness.attach_dag_run(run.execution_id, run.id) do
       emit(run, "orchestration.started", %{payload: %{node_count: map_size(dag.nodes)}})
       {:ok, run}
     end
@@ -755,6 +757,17 @@ defmodule AOS.AgentOS.Orchestration.DAGEngine do
   end
 
   defp emit(run, event_type, attrs) do
+    Harness.trace(
+      run.execution_id,
+      "orchestration",
+      event_type,
+      Map.merge(Map.get(attrs, :payload, %{}), %{
+        run_id: run.id,
+        node_id: Map.get(attrs, :node_id)
+      }),
+      idempotency_key: "orchestration:#{run.id}:#{event_type}:#{Map.get(attrs, :node_id, "run")}"
+    )
+
     MetaCoordinator.emit(
       EventProtocol.new(event_type, %{
         run_id: run.id,
