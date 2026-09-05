@@ -11,6 +11,7 @@ defmodule AOS.AgentOS.Config do
   def llm_provider, do: get(:llm_provider)
   def api_key, do: get(:api_key)
   def agent_model, do: get(:agent_model)
+  def agent_stream?, do: get(:agent_stream, false) == true
   def agent_base_url, do: get(:agent_base_url)
   def agent_api_key, do: get(:agent_api_key)
   def agent_local_model, do: get(:agent_local_model)

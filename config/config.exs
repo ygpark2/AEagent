@@ -120,6 +120,7 @@ config :aos,
   agent_api_key: default_secret.("AGENT_API_KEY", "my-factory-api-key"),
   agent_base_url: System.get_env("AGENT_BASE_URL") || "http://localhost:8317/v1beta",
   agent_model: System.get_env("AGENT_MODEL") || "models/gemini-3-pro-preview",
+  agent_stream: boolean_env.("AGENT_STREAM", false),
   llm_provider: nil,
   # :api or :local
   agent_runtime_type: known_atom.("AGENT_RUNTIME_TYPE", "api", [:api, :local]),

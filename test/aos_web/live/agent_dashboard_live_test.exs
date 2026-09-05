@@ -10,6 +10,24 @@ defmodule AOSWeb.AgentDashboardLiveTest do
     {:ok, conn: put_admin_session(conn)}
   end
 
+  test "shows separate incremental responses and clears completed previews", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/agent")
+    first = make_ref()
+    second = make_ref()
+    send(view.pid, {:llm_stream_started, first})
+    send(view.pid, {:llm_stream_started, second})
+    send(view.pid, {:llm_stream_delta, first, "stream-one"})
+    send(view.pid, {:llm_stream_delta, first, "-continued"})
+    send(view.pid, {:llm_stream_delta, second, "stream-two"})
+    assert render(view) =~ "stream-one-continued"
+    assert render(view) =~ "stream-two"
+    send(view.pid, {:llm_stream_finished, first, :ok})
+    refute render(view) =~ "stream-one"
+    assert render(view) =~ "stream-two"
+    send(view.pid, {:llm_stream_finished, second, :error})
+    refute render(view) =~ "stream-two"
+  end
+
   test "renders approval request and approves tool execution", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/agent")
 
