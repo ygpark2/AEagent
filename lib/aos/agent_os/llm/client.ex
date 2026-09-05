@@ -6,6 +6,7 @@ defmodule AOS.AgentOS.LLM.Client do
   require Logger
 
   alias AOS.AgentOS.Config
+  alias AOS.AgentOS.LLM.HTTPError
   alias AOS.AgentOS.LLM.Provider.{Local, OpenAI}
 
   @max_retries 3
@@ -26,6 +27,9 @@ defmodule AOS.AgentOS.LLM.Client do
       {:ok, result} ->
         {:ok, result}
 
+      {:error, %HTTPError{retryable: true} = error} ->
+        retry_http(prompt, history, opts, current_model, retry_count, error)
+
       {:error, :empty_response} ->
         Logger.warning("LLM returned empty response. Retrying with different model...")
         handle_retry_raw(prompt, history, opts, current_model, retry_count)
@@ -39,6 +43,20 @@ defmodule AOS.AgentOS.LLM.Client do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp retry_http(prompt, history, opts, model, count, error) do
+    limit = if error.code == "free_rate_limited", do: 1, else: @max_retries
+    wait = error.retry_after_ms || round(@base_sleep_ms * :math.pow(2, count))
+
+    if count < limit and wait <= 60_000 do
+      Process.sleep(wait)
+      model = if Config.cliproxy_api?(), do: select_fallback_model(model), else: model
+      opts = opts |> Keyword.put(:model, model) |> Keyword.put(:retry_count, count + 1)
+      do_call_raw(prompt, history, opts, count + 1)
+    else
+      {:error, error}
     end
   end
 

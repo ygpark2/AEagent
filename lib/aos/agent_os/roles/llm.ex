@@ -3,12 +3,13 @@ defmodule AOS.AgentOS.Roles.LLM do
   Helper for roles to interact with the LLM. 
   Includes handling for :empty_response as a retryable error.
   """
+  alias AOS.AgentOS.Config
+  alias AOS.AgentOS.Harness
+  alias AOS.AgentOS.Harness.Budget
   alias AOS.AgentOS.LLM.{Client, Usage}
   alias AOS.AgentOS.MCP.Manager
   alias AOS.AgentOS.Tools
   alias AOS.AgentOS.ToolUse.{ApprovalService, AuditService}
-  alias AOS.AgentOS.Harness
-  alias AOS.AgentOS.Harness.Budget
 
   require OpenTelemetry.Tracer, as: Tracer
 
@@ -220,7 +221,36 @@ defmodule AOS.AgentOS.Roles.LLM do
   end
 
   defp execute_call_raw(prompt, history, opts) do
-    Client.call_raw(prompt, history, opts)
+    if Keyword.get(opts, :stream, Config.agent_stream?()) do
+      stream_call(prompt, history, opts)
+    else
+      Client.call_raw(prompt, history, opts)
+    end
+  end
+
+  defp stream_call(prompt, history, opts) do
+    ref = make_ref()
+    notify = Keyword.get(opts, :notify)
+    callback = Keyword.get(opts, :on_delta, fn _ -> :ok end)
+    notify_stream(notify, {:llm_stream_started, ref})
+
+    on_delta = fn text ->
+      case callback.(text) do
+        :halt -> :halt
+        _ -> notify_stream(notify, {:llm_stream_delta, ref, text})
+      end
+    end
+
+    result =
+      Client.call_raw(prompt, history, Keyword.merge(opts, stream: true, on_delta: on_delta))
+
+    notify_stream(notify, {:llm_stream_finished, ref, elem(result, 0)})
+    result
+  end
+
+  defp notify_stream(pid, event) do
+    if is_pid(pid), do: send(pid, event)
+    :ok
   end
 
   def list_models do
