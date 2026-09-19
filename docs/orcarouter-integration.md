@@ -36,6 +36,12 @@ Live validation attempt on 2026-09-05:
 - Result: 3 live tests, 1 passed and 2 failed. Neither test reached its streaming phase. No successful generation or usage report was returned; actual billing has not been independently checked.
 - Remaining generation checks are blocked until account balance/key quota is available. No top-up or account settings were changed.
 
+Re-check on 2026-09-19:
+
+- Paid path (`orcarouter/auto`): still HTTP 402 `insufficient_user_quota` (fresh request id, quota not yet available). A development/testing credit grant was offered by OrcaRouter's team but had not been applied to the account/key as of this check.
+- Free-tier fallback attempted (`z-ai/glm-5.3-flash-free`, `deepseek/deepseek-v4-flash-free`): rejected with HTTP 429, code `free_rate_limited`, reason `err_free_access_denied` — free models require the workspace owner to link an established (non-newly-created) GitHub account, which this workspace does not currently have. This is an eligibility gate, not a transient rate limit, so it will not clear by retrying.
+- No account settings, model selection, or committed configuration were changed by this re-check; `.env-test` still targets `orcarouter/auto`.
+
 ```sh
 mix test test/aos/agent_os/llm test/aos/http_client_stream_test.exs test/aos_web/live/agent_dashboard_live_test.exs
 mix test
@@ -79,7 +85,9 @@ Integration status: Implemented on an integration branch; live provider verifica
 
 Requested listing: Built with OrcaRouter, with referral and partner dashboard information after approval.
 
-Contact details have been supplied privately and are intentionally omitted from this public document. The official Apply with GitHub flow leads to `https://www.orcarouter.ai/console/partner-apply?intent=oss` after website login. It requires a GitHub-linked OrcaRouter session and repository ownership verification; a generation API key and `gh` login do not establish that website session. This draft has not been submitted. Use category `selfhost` and the repository URL above as the project URL. Do not claim partner status before approval.
+Confirmed with OrcaRouter (2026-09-19): submission ahead of final generation testing is acceptable, review can proceed against the integration branch as-is, and there is no requirement to make OrcaRouter the default provider. Referral link and Partner Dashboard access are expected to become available after registration, not before.
+
+Contact details have been supplied privately and are intentionally omitted from this public document. The official Apply with GitHub flow leads to `https://www.orcarouter.ai/console/partner-apply?intent=oss` after website login. It requires a GitHub-linked OrcaRouter session and repository ownership verification; a generation API key and `gh` login do not establish that website session — the workspace owner must complete this step directly. This draft has not been submitted. Use category `selfhost` and the repository URL above as the project URL. Do not claim partner status before approval.
 
 GitHub draft PR text is prepared in `docs/orcarouter-pr.md`. CLI authentication is verified; the earlier sandbox-only authentication failure did not reflect the actual keychain login.
 
