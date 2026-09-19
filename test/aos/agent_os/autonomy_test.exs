@@ -1,5 +1,5 @@
 defmodule AOS.AgentOS.AutonomyTest do
-  use ExUnit.Case, async: true
+  use AOS.DataCase, async: true
 
   alias AOS.AgentOS.Autonomy
   alias AOS.AgentOS.Tools

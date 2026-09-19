@@ -53,6 +53,25 @@ mix ecto.setup
 mix phx.server
 ```
 
+## Optional Provider: OrcaRouter
+
+OrcaRouter uses the existing OpenAI-compatible API provider. Set these values in your environment configuration:
+
+```dotenv
+AGENT_RUNTIME_TYPE=api
+AGENT_BASE_URL=https://api.orcarouter.ai/v1
+AGENT_API_KEY=<your-orcarouter-api-key>
+AGENT_MODEL=<model-id-from-orcarouter>
+AGENT_STREAM=false
+CLIPROXYAPI=false
+```
+
+Get a key through the [official documentation](https://docs.orcarouter.ai/introduction) and choose an available ID from the [model catalog](https://docs.orcarouter.ai/getting-started/models). Restart after changing configuration; releases using build-time configuration require rebuilding.
+
+Set `AGENT_STREAM=true` for incremental API responses in the agent dashboard. Tool arguments are assembled before execution, and failed partial streams are not automatically replayed. Existing approval rules still apply. To revert, restore your previous provider configuration and disable streaming.
+
+Live OrcaRouter validation and partner approval are pending. No referral link has been added. Local tests do not certify every upstream model. `cost_usd` remains AEagent's configured estimate, not an OrcaRouter billing receipt. See the [integration checklist](docs/orcarouter-integration.md).
+
 ## Current Implementation Status
 - **Enhanced Observability**: Adoption of OpenTelemetry to visualize the entire flow of LLM calls and tool executions.
 - **Dynamic Extensibility**: Dynamically registers and unregisters MCP (Model Context Protocol) servers at runtime to expand the toolset in real-time.

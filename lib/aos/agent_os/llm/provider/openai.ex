@@ -4,7 +4,7 @@ defmodule AOS.AgentOS.LLM.Provider.OpenAI do
   """
 
   alias AOS.AgentOS.Config
-  alias AOS.AgentOS.LLM.Usage
+  alias AOS.AgentOS.LLM.{ChatStream, HTTPError, Usage}
   alias AOS.HTTPClient
 
   def call(prompt, history, opts) do
@@ -16,37 +16,99 @@ defmodule AOS.AgentOS.LLM.Provider.OpenAI do
     {url, body} = prepare_request(base_url, model, prompt, history, tools)
     headers = [{"Authorization", "Bearer #{api_key}"}, {"Content-Type", "application/json"}]
 
-    case HTTPClient.post(url, body, headers, timeout: 60_000, recv_timeout: 60_000) do
+    if Keyword.get(opts, :stream, false) do
+      stream(url, body, headers, opts)
+    else
+      request(url, body, headers)
+    end
+  end
+
+  defp request(url, body, headers) do
+    case HTTPClient.post(url, body, headers, request_options()) do
       {:ok, %{status: 200, body: resp_body}} ->
         parse_raw_response(resp_body)
 
-      {:ok, %{status: status}} when status in [429, 500, 502, 503, 504] ->
-        {:error, {:retryable_http_error, status}}
-
-      {:ok, %{status: status, body: body}} ->
-        {:error, "API Error: #{status} #{body}"}
+      {:ok, response} ->
+        {:error, HTTPError.from_response(response)}
 
       {:error, reason} ->
         {:error, {:transport_error, reason}}
     end
   end
 
+  defp request_options do
+    [
+      connect_options: [timeout: 60_000],
+      receive_timeout: 60_000,
+      decode_body: false,
+      retry: false,
+      redirect: false
+    ]
+  end
+
+  defp stream(url, body, headers, opts) do
+    payload =
+      body
+      |> Jason.decode!()
+      |> Map.merge(%{"stream" => true, "stream_options" => %{"include_usage" => true}})
+
+    on_delta = Keyword.get(opts, :on_delta, fn _ -> :ok end)
+    reducer = fn data, state -> ChatStream.feed(data, state, on_delta) end
+
+    case HTTPClient.post_stream(
+           url,
+           Jason.encode!(payload),
+           headers,
+           reducer,
+           %ChatStream{},
+           request_options()
+         ) do
+      {:ok, %{status: 200, stream_state: state}} ->
+        parse_stream(state)
+
+      {:ok, response} ->
+        {:error, HTTPError.from_response(response)}
+
+      {:error, _reason} ->
+        {:error, :stream_transport_error}
+    end
+  end
+
+  defp parse_stream(state) do
+    with {:ok, response} <- ChatStream.result(state),
+         {:ok, result} <- parse_decoded_response(response) do
+      {:ok, result}
+    else
+      {:error, reason} -> {:error, {:stream_error, reason}}
+    end
+  end
+
   def list_models do
     base_url = Config.agent_base_url()
     api_key = Config.agent_api_key()
-    url = "#{String.replace(base_url, ~r|/v1beta$|, "")}/v1/models"
+    url = endpoint(base_url, "models")
     headers = [{"Authorization", "Bearer #{api_key}"}]
 
-    case HTTPClient.get(url, headers) do
+    case HTTPClient.get(url, headers, request_options()) do
       {:ok, %{status: 200, body: body}} ->
-        case Jason.decode(body) do
-          {:ok, data} -> {:ok, Enum.map(data["data"] || [], & &1["id"])}
-          {:error, reason} -> {:error, {:invalid_models_response, reason}}
-        end
+        parse_models(Jason.decode(body))
 
       _ ->
         {:error, :failed_to_list_models}
     end
+  end
+
+  defp parse_models({:ok, %{"data" => models}}) when is_list(models) do
+    if Enum.all?(models, &(is_map(&1) and is_binary(&1["id"]))),
+      do: {:ok, Enum.map(models, & &1["id"])},
+      else: {:error, :invalid_models_response}
+  end
+
+  defp parse_models(_), do: {:error, :invalid_models_response}
+
+  defp endpoint(base_url, path) do
+    base = base_url |> String.trim_trailing("/") |> String.replace(~r{/(v1beta|v1)$}, "")
+    "#{base}/v1/#{path}"
   end
 
   defp prepare_request(base_url, model, prompt, history, tools) do
@@ -108,7 +170,8 @@ defmodule AOS.AgentOS.LLM.Provider.OpenAI do
         )
     }
 
-    {"#{String.replace(base_url, ~r|/v1beta$|, "")}/v1/chat/completions", Jason.encode!(payload)}
+    payload = if tools in [nil, []], do: Map.delete(payload, :tools), else: payload
+    {endpoint(base_url, "chat/completions"), Jason.encode!(payload)}
   end
 
   defp scrub_utf8(text) when is_binary(text) do
@@ -124,13 +187,18 @@ defmodule AOS.AgentOS.LLM.Provider.OpenAI do
     end
   end
 
-  defp parse_decoded_response(data) do
-    choice = get_in(data, ["choices", Access.at(0), "message"])
+  defp parse_decoded_response(%{"choices" => [%{"message" => choice} | _]} = data) do
     usage = Usage.normalize_usage(data["usage"])
     model = data["model"]
 
     parse_choice(choice, usage, model)
   end
+
+  defp parse_decoded_response(_), do: {:error, :invalid_chat_response}
+
+  defp parse_choice(%{"tool_calls" => calls, "content" => content}, usage, model)
+       when calls in [nil, []] and is_binary(content),
+       do: {:ok, Usage.build_text_response(content, usage, model)}
 
   defp parse_choice(%{"tool_calls" => tool_calls}, usage, model) do
     case parse_tool_calls(tool_calls) do
@@ -159,10 +227,17 @@ defmodule AOS.AgentOS.LLM.Provider.OpenAI do
 
   defp parse_tool_calls(_tool_calls), do: {:error, :invalid_tool_calls}
 
-  defp parse_tool_call(%{"id" => id, "function" => %{"name" => name} = function}) do
+  defp parse_tool_call(%{
+         "id" => id,
+         "function" => %{"name" => name, "arguments" => arguments} = function
+       })
+       when is_binary(id) and id != "" and is_binary(name) and name != "" and is_binary(arguments) do
     case Jason.decode(function["arguments"] || "{}") do
-      {:ok, arguments} ->
+      {:ok, arguments} when is_map(arguments) ->
         {:ok, %{"id" => id, "name" => name, "arguments" => arguments}}
+
+      {:ok, _} ->
+        {:error, {:invalid_tool_arguments, name}}
 
       {:error, reason} ->
         {:error, {:invalid_tool_arguments, name, reason}}

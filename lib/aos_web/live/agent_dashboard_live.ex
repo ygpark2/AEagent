@@ -88,6 +88,30 @@ defmodule AOSWeb.AgentDashboardLive do
   # --- Real-time Streaming Handlers ---
 
   @impl true
+  def handle_info({:llm_stream_started, ref}, socket) do
+    message = %{role: "assistant", type: :chat, content: "", stream_ref: ref}
+    {:noreply, assign(socket, messages: socket.assigns.messages ++ [message])}
+  end
+
+  @impl true
+  def handle_info({:llm_stream_delta, ref, text}, socket) do
+    messages =
+      Enum.map(socket.assigns.messages, fn message ->
+        if Map.get(message, :stream_ref) == ref,
+          do: Map.update!(message, :content, &(&1 <> text)),
+          else: message
+      end)
+
+    {:noreply, assign(socket, messages: messages)}
+  end
+
+  @impl true
+  def handle_info({:llm_stream_finished, ref, _status}, socket) do
+    messages = Enum.reject(socket.assigns.messages, &(Map.get(&1, :stream_ref) == ref))
+    {:noreply, assign(socket, messages: messages)}
+  end
+
+  @impl true
   def handle_info({:architect_status, status}, socket) do
     new_message = AgentDashboardPresenter.architect_message(status)
 

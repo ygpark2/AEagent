@@ -55,6 +55,25 @@ mix ecto.setup
 mix phx.server
 ```
 
+## Optional Provider: OrcaRouter
+
+OrcaRouter는 기존 OpenAI-compatible API Provider를 통해 선택적으로 사용할 수 있습니다. 환경 설정에서 아래 값을 지정합니다.
+
+```dotenv
+AGENT_RUNTIME_TYPE=api
+AGENT_BASE_URL=https://api.orcarouter.ai/v1
+AGENT_API_KEY=<your-orcarouter-api-key>
+AGENT_MODEL=<model-id-from-orcarouter>
+AGENT_STREAM=false
+CLIPROXYAPI=false
+```
+
+[공식 문서](https://docs.orcarouter.ai/introduction)에서 키를 발급하고 [모델 목록](https://docs.orcarouter.ai/getting-started/models)에서 사용 가능한 Model ID를 선택합니다. 설정 변경 후 앱을 재시작해야 하며, 빌드 시 적용되는 릴리스 설정은 재빌드가 필요합니다.
+
+`AGENT_STREAM=true`로 설정하면 Agent 대시보드에 API 응답이 점진적으로 표시됩니다. 도구 인자가 완성된 뒤 기존 승인 정책에 따라 도구를 실행하며, 부분 응답 이후 실패한 스트림은 자동 재전송하지 않습니다. 복귀하려면 이전 Provider 설정을 복원하고 Streaming을 끕니다.
+
+실제 OrcaRouter API 검증과 파트너 승인은 대기 중이며 Referral Link는 아직 추가하지 않았습니다. 로컬 테스트는 모든 모델의 동작을 보증하지 않습니다. `cost_usd`는 AEagent 설정에 따른 추정치이며 OrcaRouter의 실제 청구액이 아닙니다. 검증 및 릴리스 상태는 [통합 체크리스트](docs/orcarouter-integration.md)를 참고하세요.
+
 ## 현재 구현 상태
 - **관측성 강화**: OpenTelemetry 도입으로 LLM 호출 및 도구 실행의 전체 흐름을 시각화합니다.
 - **동적 확장**: 런타임에 MCP(Model Context Protocol) 서버를 동적으로 등록/해제하여 도구 세트를 실시간 확장합니다.
