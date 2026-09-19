@@ -39,61 +39,77 @@ Completed in current implementation
   - Tests: test/aos/agent_os/core/policy_gate_test.exs,
     test/aos/agent_os/tool_use/approval_service_test.exs, plus a replay assertion in
     executions_test.exs.
-  - Not done yet: no dashboard UI renders these events - that's covered by item 1 below
-    (Unified execution timeline UI), which doesn't exist in the dashboard yet at all.
+- Added unified execution timeline UI:
+  - New "Timeline" tab on the agent dashboard (lib/aos_web/live/agent_dashboard_live.ex/.heex),
+    alongside Inspection/Settings/Approvals.
+  - DashboardService.timeline_entries/1 merges agent_execution_events (execution.*,
+    approval.*, policy.* - all of it, via Executions.replay_execution/1), tool audits, and
+    delegation traces into one list, sorted ascending by timestamp.
+  - Each entry carries a category (event/tool/delegation), a badge, a human title (approval
+    and policy events surface tool_name/policy/reason in the title), an optional subtitle,
+    and a timestamp.
+  - Dashboard now tracks a `current_execution_id` assign (set when a chat message enqueues a
+    new execution) and a `timeline_entries` assign, refreshed on tab switch and after
+    workflow_error/execution_terminal/tool-confirmation-request/durable-approval-decision
+    events while the Timeline tab is active.
+  - Tests: test/aos/agent_os/dashboard_service_test.exs (entry merging/ordering/titles),
+    plus a LiveView test for the empty state in test/aos_web/live/agent_dashboard_live_test.exs.
+  - Verified by hand: ran the dev server, logged in, confirmed /agent renders with the new
+    Timeline button server-side (curl), matching the same "only the active tab's body
+    renders" behavior as the existing Settings/Approvals tabs. A full interactive
+    click-through wasn't done (no browser automation available in this environment) - the
+    LiveViewTest suite exercises the same mount/handle_event/render code path a browser
+    would, but a manual click-through in a real browser is still worth doing before calling
+    this fully done.
+  - Not done: no historical-execution picker - the tab always shows the most recently
+    enqueued execution in the current dashboard session, not older ones.
 
 Next high-priority work
 -----------------------
-1. Unified execution timeline UI
-   - Add a Timeline tab to the dashboard.
-   - Render execution queued/running/blocked/failed/succeeded events.
-   - Render approval.requested / approval.approved / approval.rejected events.
-   - Render tool audit summaries and delegation traces in chronological order.
-
-2. Approval resume hardening
+1. Approval resume hardening
    - Store the blocked node/checkpoint when approval is requested.
    - Resume from the last stable checkpoint instead of rebuilding from broad execution context only.
    - Add explicit resume mode for approval continuation.
    - Avoid duplicate pending approval requests for identical unresolved tool calls.
 
-3. Tool registry health checks
+2. Tool registry health checks
    - Add health check behavior for internal and external MCP tools.
    - Store last_health_check_at and health_status transitions.
    - Automatically mark external MCP tools unavailable when server calls fail repeatedly.
    - Add registry health endpoint and dashboard status.
 
-4. Tool registry allowlists and scopes
+3. Tool registry allowlists and scopes
    - Add workflow/session-level tool allowlists.
    - Add registry scopes/capabilities such as file_read, file_write, shell_exec, web_search, web_fetch.
    - Make skill permissions resolve through registry capabilities instead of only static config.
    - Add path/domain constraints for tools that access files or network.
 
-5. Workflow definition runner
+4. Workflow definition runner
    - Use stored Workflow.graph/policy_profile/approval_policy at runtime.
    - Add create/update/list/show workflow API.
    - Add dashboard/admin view for workflow definitions.
    - Add trigger definitions for manual, webhook, Slack, and scheduled runs.
 
-6. Durable execution improvements
+5. Durable execution improvements
    - Add pause/cancel/resume API.
    - Add stuck execution detector.
    - Add idempotency keys for tool calls and LLM calls.
    - Persist node transitions before and after each node execution.
    - Add explicit timeout handling for workflow and node execution.
 
-7. Agent contract validation
+6. Agent contract validation
    - Define AgentContract with input_schema, output_schema, allowed_tools, success_criteria, max_turns.
    - Validate worker/evaluator/delegator outputs against schemas.
    - Record contract violations as execution events.
    - Use contract failures to decide retry, delegation, or blocking.
 
-8. Metrics and evaluation loop
+7. Metrics and evaluation loop
    - Track workflow success rate, approval rate, rejection rate, tool failure rate, retry count, latency, and cost.
    - Feed these metrics into strategy evaluation.
    - Add dashboard cards for operational metrics.
    - Add API endpoint for workflow/tool performance summaries.
 
-9. API and dashboard polish
+8. API and dashboard polish
    - Add OpenAPI/Swagger definitions for approvals, workflows, registry, and timeline endpoints.
    - Add pagination/filtering for approval and registry APIs.
    - Add audit-friendly display of actor identity for approval decisions.

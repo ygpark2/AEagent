@@ -24,7 +24,12 @@ defmodule AOSWeb.AgentDashboardLive do
     if message == "" do
       {:noreply, socket}
     else
-      {:noreply, assign(socket, DashboardService.submit_message(message, socket.assigns, self()))}
+      socket =
+        socket
+        |> assign(DashboardService.submit_message(message, socket.assigns, self()))
+        |> maybe_refresh_timeline()
+
+      {:noreply, socket}
     end
   end
 
@@ -52,13 +57,15 @@ defmodule AOSWeb.AgentDashboardLive do
       case tab do
         "settings" -> :settings
         "approvals" -> :approvals
+        "timeline" -> :timeline
         _ -> :inspection
       end
 
     {:noreply,
      assign(socket,
        active_right_tab: active_right_tab,
-       durable_approvals: DashboardService.durable_approvals()
+       durable_approvals: DashboardService.durable_approvals(),
+       timeline_entries: DashboardService.timeline_entries(socket.assigns.current_execution_id)
      )}
   end
 
@@ -147,11 +154,15 @@ defmodule AOSWeb.AgentDashboardLive do
   def handle_info({:workflow_error, node_id, reason}, socket) do
     new_message = AgentDashboardPresenter.workflow_error_message(node_id, reason)
 
-    {:noreply,
-     assign(socket,
-       messages: socket.assigns.messages ++ [new_message],
-       current_status: "Error occurred."
-     )}
+    socket =
+      socket
+      |> assign(
+        messages: socket.assigns.messages ++ [new_message],
+        current_status: "Error occurred."
+      )
+      |> maybe_refresh_timeline()
+
+    {:noreply, socket}
   end
 
   @impl true
@@ -159,11 +170,12 @@ defmodule AOSWeb.AgentDashboardLive do
     {messages, current_status} =
       AgentDashboardPresenter.terminal_messages(socket.assigns.messages, status, execution)
 
-    {:noreply,
-     assign(socket,
-       messages: messages,
-       current_status: current_status
-     )}
+    socket =
+      socket
+      |> assign(messages: messages, current_status: current_status)
+      |> maybe_refresh_timeline()
+
+    {:noreply, socket}
   end
 
   @impl true
@@ -182,17 +194,20 @@ defmodule AOSWeb.AgentDashboardLive do
         {:request_tool_confirmation, approval_ref, tool_name, args, requester_pid},
         socket
       ) do
-    {:noreply,
-     assign(
-       socket,
-       DashboardService.receive_tool_approval_request(
-         socket.assigns,
-         approval_ref,
-         tool_name,
-         args,
-         requester_pid
-       )
-     )}
+    socket =
+      socket
+      |> assign(
+        DashboardService.receive_tool_approval_request(
+          socket.assigns,
+          approval_ref,
+          tool_name,
+          args,
+          requester_pid
+        )
+      )
+      |> maybe_refresh_timeline()
+
+    {:noreply, socket}
   end
 
   defp handle_step_completed(node_id, module, data, socket) do
@@ -206,6 +221,7 @@ defmodule AOSWeb.AgentDashboardLive do
         current_status: status_text
       )
       |> maybe_assign_inspection(inspection)
+      |> maybe_refresh_timeline()
 
     {:noreply, socket}
   end
@@ -220,6 +236,16 @@ defmodule AOSWeb.AgentDashboardLive do
   defp maybe_assign_inspection(socket, nil), do: socket
   defp maybe_assign_inspection(socket, inspection), do: assign(socket, active_diff: inspection)
 
+  defp maybe_refresh_timeline(socket) do
+    if socket.assigns.active_right_tab == :timeline do
+      assign(socket,
+        timeline_entries: DashboardService.timeline_entries(socket.assigns.current_execution_id)
+      )
+    else
+      socket
+    end
+  end
+
   defp resolve_durable_approval(socket, id, decision) do
     result =
       case decision do
@@ -231,10 +257,12 @@ defmodule AOSWeb.AgentDashboardLive do
       {:ok, request} ->
         maybe_resume_after_approval(decision, request)
 
-        assign(socket,
+        socket
+        |> assign(
           durable_approvals: DashboardService.durable_approvals(),
           current_status: "Approval #{request.status}."
         )
+        |> maybe_refresh_timeline()
 
       {:error, reason} ->
         assign(socket, current_status: "Approval failed: #{inspect(reason)}")

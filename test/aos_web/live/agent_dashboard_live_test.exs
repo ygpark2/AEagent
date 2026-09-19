@@ -214,6 +214,20 @@ defmodule AOSWeb.AgentDashboardLiveTest do
     assert html =~ "No pending approvals."
   end
 
+  test "switches right pane to timeline tab and shows empty state before any execution", %{
+    conn: conn
+  } do
+    {:ok, view, _html} = live(conn, "/agent")
+
+    view
+    |> element(~s(button[phx-click="switch_right_tab"][phx-value-tab="timeline"]))
+    |> render_click()
+
+    html = render(view)
+    assert html =~ "Execution Timeline"
+    assert html =~ "Send a message to start an execution."
+  end
+
   test "updates ui settings without leaving settings tab", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/agent")
 

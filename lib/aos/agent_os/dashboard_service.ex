@@ -17,10 +17,12 @@ defmodule AOS.AgentOS.DashboardService do
       active_diff: "",
       input_value: "",
       session_id: nil,
+      current_execution_id: nil,
       prompt_history: [],
       agent_pid: nil,
       pending_approvals: %{},
       durable_approvals: durable_approvals(),
+      timeline_entries: [],
       active_right_tab: :inspection,
       ui_settings: default_ui_settings,
       full_width: true
@@ -35,10 +37,12 @@ defmodule AOS.AgentOS.DashboardService do
       active_diff: "",
       input_value: "",
       session_id: nil,
+      current_execution_id: nil,
       prompt_history: [],
       agent_pid: nil,
       pending_approvals: %{},
       durable_approvals: [],
+      timeline_entries: [],
       active_right_tab: :inspection,
       ui_settings: default_ui_settings,
       full_width: true
@@ -78,6 +82,7 @@ defmodule AOS.AgentOS.DashboardService do
       input_value: "",
       current_status: "Designing workflow...",
       session_id: execution.session_id,
+      current_execution_id: execution.id,
       prompt_history: assigns.prompt_history ++ [message]
     }
   end
@@ -112,6 +117,84 @@ defmodule AOS.AgentOS.DashboardService do
   def durable_approvals do
     ApprovalQueue.list_pending()
     |> Enum.map(&ApprovalQueue.serialize/1)
+  end
+
+  def timeline_entries(nil), do: []
+
+  def timeline_entries(execution_id) do
+    case Executions.get_execution(execution_id) do
+      nil ->
+        []
+
+      _execution ->
+        replay = Executions.replay_execution(execution_id)
+
+        (Enum.map(replay.events, &timeline_entry_from_event/1) ++
+           Enum.map(replay.tool_audits, &timeline_entry_from_tool_audit/1) ++
+           Enum.map(replay.delegation_traces, &timeline_entry_from_delegation/1))
+        |> Enum.sort_by(& &1.timestamp, {:asc, DateTime})
+    end
+  end
+
+  defp timeline_entry_from_event(event) do
+    %{
+      id: "event:#{event.id}",
+      category: "event",
+      badge: event.event_type,
+      title: event_title(event.event_type, event.payload),
+      subtitle: event.source,
+      timestamp: event.inserted_at
+    }
+  end
+
+  defp event_title("approval." <> _ = event_type, payload) do
+    case Map.get(payload, "tool_name") do
+      nil -> event_type
+      tool_name -> "#{event_type} — #{tool_name}"
+    end
+  end
+
+  defp event_title("policy." <> _ = event_type, payload) do
+    policy = Map.get(payload, "policy")
+    reason = Map.get(payload, "reason")
+
+    case {policy, reason} do
+      {nil, _} -> event_type
+      {policy, nil} -> "#{event_type} — #{policy}"
+      {policy, reason} -> "#{event_type} — #{policy} (#{reason})"
+    end
+  end
+
+  defp event_title(event_type, payload) do
+    case Map.get(payload, "task") do
+      nil -> event_type
+      task -> "#{event_type} — #{task}"
+    end
+  end
+
+  defp timeline_entry_from_tool_audit(audit) do
+    detail = "#{audit.attempts} attempt(s)"
+    detail = if audit.error_message, do: "#{detail} — #{audit.error_message}", else: detail
+
+    %{
+      id: "tool:#{audit.id}",
+      category: "tool",
+      badge: "tool.#{audit.status}",
+      title: "#{audit.server_id}__#{audit.tool_name}",
+      subtitle: detail,
+      timestamp: audit.started_at || audit.inserted_at
+    }
+  end
+
+  defp timeline_entry_from_delegation(trace) do
+    %{
+      id: "delegation:#{trace.id}",
+      category: "delegation",
+      badge: "delegation.#{trace.status}",
+      title: trace.task,
+      subtitle: trace.result_summary || trace.error_message,
+      timestamp: trace.inserted_at
+    }
   end
 
   def merge_ui_settings(

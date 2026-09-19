@@ -115,6 +115,13 @@
         >
           Approvals
         </button>
+        <button
+          phx-click="switch_right_tab"
+          phx-value-tab="timeline"
+          class={"px-3 py-2 text-xs font-bold uppercase tracking-wider rounded #{if @active_right_tab == :timeline, do: "bg-emerald-900/40 text-emerald-300 border border-emerald-800", else: "text-gray-500 hover:text-gray-300"}"}
+        >
+          Timeline
+        </button>
       </div>
     </div>
     
@@ -209,12 +216,57 @@
             </div>
           <% end %>
         <% else %>
-          <%= if @active_diff == "" do %>
-            <div class="h-full flex items-center justify-center text-gray-600 italic text-center px-4" style={"font-size: #{@ui_settings["right_font_size"]}px;"}>
-              Select a file or wait for agent modifications to view details here.
+          <%= if @active_right_tab == :timeline do %>
+            <div class="flex items-center justify-between mb-4">
+              <h3 class="text-xl font-bold text-emerald-300 uppercase tracking-wider">Execution Timeline</h3>
+              <button phx-click="switch_right_tab" phx-value-tab="timeline" class="text-lg text-gray-300 hover:text-white px-4 py-2 rounded bg-gray-900 border border-gray-700">
+                Refresh
+              </button>
             </div>
+
+            <%= if @current_execution_id do %>
+              <div class="mb-3 text-xs text-gray-500 break-all">
+                execution: <%= @current_execution_id %>
+              </div>
+            <% end %>
+
+            <%= if @timeline_entries == [] do %>
+              <div class="h-full flex items-center justify-center text-gray-600 italic text-center px-4" style={"font-size: #{@ui_settings["right_font_size"]}px;"}>
+                <%= if @current_execution_id, do: "No timeline events yet.", else: "Send a message to start an execution." %>
+              </div>
+            <% else %>
+              <div class="space-y-2">
+                <%= for entry <- @timeline_entries do %>
+                  <div class="bg-gray-900 border border-gray-700 rounded-lg p-3">
+                    <div class="flex items-center justify-between gap-2">
+                      <span class={"text-xs font-bold uppercase tracking-wide #{case entry.category do
+                        "event" -> "text-cyan-400"
+                        "tool" -> "text-amber-400"
+                        "delegation" -> "text-purple-400"
+                        _ -> "text-gray-400"
+                      end}"}>
+                        <%= entry.badge %>
+                      </span>
+                      <span class="text-[11px] text-gray-500 shrink-0">
+                        <%= Calendar.strftime(entry.timestamp, "%H:%M:%S") %>
+                      </span>
+                    </div>
+                    <div class="mt-1 text-sm text-gray-200 break-words"><%= entry.title %></div>
+                    <%= if entry.subtitle do %>
+                      <div class="mt-1 text-xs text-gray-500 break-words"><%= entry.subtitle %></div>
+                    <% end %>
+                  </div>
+                <% end %>
+              </div>
+            <% end %>
           <% else %>
-            <pre class="text-gray-300 whitespace-pre-wrap leading-snug" style={"font-size: #{@ui_settings["right_font_size"]}px;"}><%= @active_diff %></pre>
+            <%= if @active_diff == "" do %>
+              <div class="h-full flex items-center justify-center text-gray-600 italic text-center px-4" style={"font-size: #{@ui_settings["right_font_size"]}px;"}>
+                Select a file or wait for agent modifications to view details here.
+              </div>
+            <% else %>
+              <pre class="text-gray-300 whitespace-pre-wrap leading-snug" style={"font-size: #{@ui_settings["right_font_size"]}px;"}><%= @active_diff %></pre>
+            <% end %>
           <% end %>
         <% end %>
       <% end %>
