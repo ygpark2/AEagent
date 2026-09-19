@@ -14,6 +14,12 @@ defmodule AOS.AgentOS.Execution.EventStore do
     %Event{}
     |> Event.changeset(attrs)
     |> Repo.insert()
+  rescue
+    # The SQLite adapter can't map its FK violation message to a named
+    # constraint, so it raises instead of returning an error changeset.
+    # Timeline events are best-effort observability, never load-bearing,
+    # so a dangling execution/session/workflow id should not crash the caller.
+    e in Ecto.ConstraintError -> {:error, e}
   end
 
   def list_events(execution_id) do

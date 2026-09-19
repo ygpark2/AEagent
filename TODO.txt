@@ -1,0 +1,107 @@
+aeagent TODO
+============
+
+Completed in current implementation
+-----------------------------------
+- Added durable workflow definitions via agent_workflows.
+- Added execution timeline events via agent_execution_events.
+- Added durable human approval queue via agent_approval_requests.
+- Added approval API:
+  - GET /api/v1/approvals
+  - GET /api/v1/approvals/:id
+  - POST /api/v1/approvals/:id/approve
+  - POST /api/v1/approvals/:id/reject
+- Added dashboard Approvals tab for pending durable approval requests.
+- Added DB-backed MCP/tool registry via agent_tool_registry.
+- Added tool registry API:
+  - GET /api/v1/tools/registry
+  - POST /api/v1/tools/registry/sync
+  - PATCH /api/v1/tools/registry/:server_id/:tool_name
+- Connected registry metadata to tool permission/risk/confirmation/retry/timeout behavior.
+- Added policy decision trace:
+  - New AOS.AgentOS.Core.PolicyTrace persists allow/blocked/pending decisions to
+    agent_execution_events as "policy.allowed" / "policy.blocked" / "policy.pending".
+  - PolicyGate now traces every SafetyPolicy/BudgetPolicy/DomainPolicy check (per-policy,
+    stops recording once one halts execution, matching PolicyGate's own short-circuit).
+  - ApprovalService now traces tool-allowlist decisions (skill permission, autonomy level,
+    auto-approve) and approval-check decisions (previously-approved, durable pending,
+    interactive approve/reject), tagged "ToolAllowlist" / "ApprovalCheck".
+  - Each event payload carries policy name, decision, reason, node_id/tool_name, and an
+    input_summary (domain, autonomy_level, loop_count, cost_usd for PolicyGate).
+  - Already surfaced in the replay payload for free (Executions.replay_execution/1 lists
+    all agent_execution_events) - no replay code change needed.
+  - Event.changeset now declares foreign_key_constraint/2 for execution_id/session_id/
+    workflow_id, and EventStore.append_event/1 rescues Ecto.ConstraintError, since the
+    SQLite adapter can't map its FK violation to a named constraint and raises instead of
+    returning a changeset error - timeline events are best-effort and must never crash the
+    caller (e.g. ApprovalService's approved-request lookup, which intentionally probes with
+    a not-yet-persisted execution_id).
+  - Tests: test/aos/agent_os/core/policy_gate_test.exs,
+    test/aos/agent_os/tool_use/approval_service_test.exs, plus a replay assertion in
+    executions_test.exs.
+  - Not done yet: no dashboard UI renders these events - that's covered by item 1 below
+    (Unified execution timeline UI), which doesn't exist in the dashboard yet at all.
+
+Next high-priority work
+-----------------------
+1. Unified execution timeline UI
+   - Add a Timeline tab to the dashboard.
+   - Render execution queued/running/blocked/failed/succeeded events.
+   - Render approval.requested / approval.approved / approval.rejected events.
+   - Render tool audit summaries and delegation traces in chronological order.
+
+2. Approval resume hardening
+   - Store the blocked node/checkpoint when approval is requested.
+   - Resume from the last stable checkpoint instead of rebuilding from broad execution context only.
+   - Add explicit resume mode for approval continuation.
+   - Avoid duplicate pending approval requests for identical unresolved tool calls.
+
+3. Tool registry health checks
+   - Add health check behavior for internal and external MCP tools.
+   - Store last_health_check_at and health_status transitions.
+   - Automatically mark external MCP tools unavailable when server calls fail repeatedly.
+   - Add registry health endpoint and dashboard status.
+
+4. Tool registry allowlists and scopes
+   - Add workflow/session-level tool allowlists.
+   - Add registry scopes/capabilities such as file_read, file_write, shell_exec, web_search, web_fetch.
+   - Make skill permissions resolve through registry capabilities instead of only static config.
+   - Add path/domain constraints for tools that access files or network.
+
+5. Workflow definition runner
+   - Use stored Workflow.graph/policy_profile/approval_policy at runtime.
+   - Add create/update/list/show workflow API.
+   - Add dashboard/admin view for workflow definitions.
+   - Add trigger definitions for manual, webhook, Slack, and scheduled runs.
+
+6. Durable execution improvements
+   - Add pause/cancel/resume API.
+   - Add stuck execution detector.
+   - Add idempotency keys for tool calls and LLM calls.
+   - Persist node transitions before and after each node execution.
+   - Add explicit timeout handling for workflow and node execution.
+
+7. Agent contract validation
+   - Define AgentContract with input_schema, output_schema, allowed_tools, success_criteria, max_turns.
+   - Validate worker/evaluator/delegator outputs against schemas.
+   - Record contract violations as execution events.
+   - Use contract failures to decide retry, delegation, or blocking.
+
+8. Metrics and evaluation loop
+   - Track workflow success rate, approval rate, rejection rate, tool failure rate, retry count, latency, and cost.
+   - Feed these metrics into strategy evaluation.
+   - Add dashboard cards for operational metrics.
+   - Add API endpoint for workflow/tool performance summaries.
+
+9. API and dashboard polish
+   - Add OpenAPI/Swagger definitions for approvals, workflows, registry, and timeline endpoints.
+   - Add pagination/filtering for approval and registry APIs.
+   - Add audit-friendly display of actor identity for approval decisions.
+   - Add tests for error cases and permission failures.
+
+Known cleanup
+-------------
+- mix credo still reports pre-existing issues:
+  - lib/aos/prom_ex.ex is missing @moduledoc.
+  - lib/aos/cli/line_editor.ex has complexity/nesting warnings.
+- Some files have format-only diffs from mix format. Review before committing if strict change isolation is required.

@@ -29,5 +29,8 @@ defmodule AOS.AgentOS.Execution.Event do
       :position
     ])
     |> validate_required([:event_type, :payload, :position])
+    |> foreign_key_constraint(:execution_id)
+    |> foreign_key_constraint(:session_id)
+    |> foreign_key_constraint(:workflow_id)
   end
 end

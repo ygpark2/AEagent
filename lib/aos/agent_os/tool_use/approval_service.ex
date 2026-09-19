@@ -4,6 +4,7 @@ defmodule AOS.AgentOS.ToolUse.ApprovalService do
   """
 
   alias AOS.AgentOS.{Autonomy, Tools}
+  alias AOS.AgentOS.Core.PolicyTrace
   alias AOS.AgentOS.Harness
   alias AOS.AgentOS.ToolUse.ApprovalQueue
 
@@ -18,15 +19,33 @@ defmodule AOS.AgentOS.ToolUse.ApprovalService do
           tool_name,
           selected_skills
         ) ->
+          trace_tool_allowlist(
+            opts,
+            server_id,
+            tool_name,
+            :blocked,
+            :tool_not_permitted_for_skills
+          )
+
           :rejected
 
         not Autonomy.tool_allowed?(autonomy_level, metadata) ->
+          trace_tool_allowlist(
+            opts,
+            server_id,
+            tool_name,
+            :blocked,
+            :tool_not_allowed_for_autonomy_level
+          )
+
           :rejected
 
         Autonomy.auto_approve_tool?(autonomy_level, metadata) ->
+          trace_tool_allowlist(opts, server_id, tool_name, :allowed, :auto_approved)
           :approved
 
         approved_request?(server_id, tool_name, args, opts) ->
+          trace_approval_check(opts, server_id, tool_name, :allowed, :previously_approved)
           :approved
 
         is_nil(notify_pid) ->
@@ -36,16 +55,46 @@ defmodule AOS.AgentOS.ToolUse.ApprovalService do
           approval_ref = "approval-" <> Integer.to_string(System.unique_integer([:positive]))
           send(notify_pid, {:request_tool_confirmation, approval_ref, tool_name, args, self()})
 
-          receive do
-            {:tool_approval, ^approval_ref, decision} -> decision
-          after
-            300_000 -> :rejected
-          end
+          interactive_decision =
+            receive do
+              {:tool_approval, ^approval_ref, decision} -> decision
+            after
+              300_000 -> :rejected
+            end
+
+          trace_approval_check(
+            opts,
+            server_id,
+            tool_name,
+            approval_outcome(interactive_decision),
+            :interactive_decision
+          )
+
+          interactive_decision
       end
 
     record_intervention(opts, server_id, tool_name, args, decision, notify_pid)
     decision
   end
+
+  defp trace_tool_allowlist(opts, server_id, tool_name, decision, reason) do
+    PolicyTrace.record(opts, "ToolAllowlist", decision,
+      source: "approval_service",
+      tool_name: "#{server_id}__#{tool_name}",
+      reason: reason
+    )
+  end
+
+  defp trace_approval_check(opts, server_id, tool_name, decision, reason) do
+    PolicyTrace.record(opts, "ApprovalCheck", decision,
+      source: "approval_service",
+      tool_name: "#{server_id}__#{tool_name}",
+      reason: reason
+    )
+  end
+
+  defp approval_outcome(:approved), do: :allowed
+  defp approval_outcome(_decision), do: :blocked
 
   defp record_intervention(opts, server_id, tool_name, args, {:pending, request}, _notify_pid) do
     Harness.record_intervention(Keyword.get(opts, :execution_id), %{
@@ -93,8 +142,20 @@ defmodule AOS.AgentOS.ToolUse.ApprovalService do
            risk_tier: metadata.risk_tier,
            requested_by: "agent"
          }) do
-      {:ok, request} -> {:pending, request}
-      {:error, _changeset} -> :rejected
+      {:ok, request} ->
+        trace_approval_check(opts, server_id, tool_name, :pending, :durable_approval_pending)
+        {:pending, request}
+
+      {:error, _changeset} ->
+        trace_approval_check(
+          opts,
+          server_id,
+          tool_name,
+          :blocked,
+          :durable_approval_request_failed
+        )
+
+        :rejected
     end
   end
 end

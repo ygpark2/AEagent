@@ -1,7 +1,7 @@
 defmodule AOS.AgentOS.ExecutionsTest do
   use AOS.DataCase, async: true
 
-  alias AOS.AgentOS.Core.{Artifact, Engine, Execution, Graph, Session}
+  alias AOS.AgentOS.Core.{Artifact, Engine, Execution, Graph, PolicyGate, Session}
   alias AOS.AgentOS.Executions
 
   alias AOS.Test.Support.Nodes.{
@@ -106,6 +106,26 @@ defmodule AOS.AgentOS.ExecutionsTest do
     assert replay.latest_checkpoint == nil
     assert replay.artifacts == []
     assert replay.tool_audits == []
+  end
+
+  test "replay exposes policy decision events" do
+    {:ok, execution} = Executions.enqueue("replay policy task", start_immediately: false)
+
+    context = %{
+      execution_id: execution.id,
+      session_id: execution.session_id,
+      task: "safe task",
+      execution_history: [],
+      cost_usd: 0.0
+    }
+
+    assert {:ok, _updated_context} = PolicyGate.check(context, :worker)
+
+    replay = Executions.replay_execution(execution.id)
+    policy_events = Enum.filter(replay.events, &(&1.event_type == "policy.allowed"))
+
+    assert length(policy_events) == 3
+    assert Enum.all?(policy_events, &(&1.execution_id == execution.id))
   end
 
   test "session_history returns prior user and assistant turns when compression is disabled" do
