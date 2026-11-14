@@ -98,6 +98,7 @@ defmodule AOSWeb.Router do
       post "/approvals/:id/approve", ApprovalController, :approve
       post "/approvals/:id/reject", ApprovalController, :reject
       post "/tools/registry/sync", ToolRegistryController, :sync
+      get "/tools/registry/health", ToolRegistryController, :health
       patch "/tools/registry/:server_id/:tool_name", ToolRegistryController, :update
       post "/strategies/prune", StrategyController, :prune
       get "/strategies/:id/events", StrategyController, :events

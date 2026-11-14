@@ -1,0 +1,75 @@
+- id: "1"
+  title: Implement resumable approval suspension state in DAGEngine and ApprovalQueue
+  description: >-
+    Introduce :suspended execution state when PolicyGate triggers approval_required,
+    and wire approval API events to trigger automatic DAG resumption from the blocked node.
+  spec_checkpoint: false
+  done_checkpoint: true
+  invoke_dev_with: >-
+    Obey AD-3 and AD-4 in ARCHITECTURE-SPINE.md. Persist the suspended node state
+    in DAGStore and ensure approval resumption continues from that exact node.
+
+- id: "2"
+  title: Implement namespaced parallel fan-in merging in DAGEngine
+  description: >-
+    Update DAGEngine to merge parallel branch outcomes into context.node_outputs[node_id]
+    and concatenate shared :artifacts lists without destructive key overwrites.
+  spec_checkpoint: false
+  done_checkpoint: true
+  invoke_dev_with: >-
+    Obey AD-2. Replace naive Map.merge/2 with namespaced node outputs to ensure
+    parallel debate and concurrent tool branches preserve all data.
+
+- id: "3"
+  title: Standardize context serialization and atom key restoration on resume
+  description: >-
+    Add schema-safe deep atomization for engine control keys upon deserializing
+    execution contexts from SQLite/PostgreSQL JSON storage.
+  spec_checkpoint: false
+  done_checkpoint: true
+  invoke_dev_with: >-
+    Ensure restored execution context preserves atom keys for :artifacts, :status,
+    and engine flags so downstream pattern matching remains reliable.
+
+- id: "4"
+  title: Add MCP tool health monitoring and automatic circuit breaker
+  description: >-
+    Implement periodic health checking in the tool registry and automatically mark
+    failing external MCP tools as unavailable before LLM dispatch.
+  spec_checkpoint: false
+  done_checkpoint: true
+  invoke_dev_with: >-
+    Track consecutive failure counts in agent_tool_registry and alert on the dashboard
+    when an external tool transitions to unavailable.
+
+- id: "5"
+  title: Enforce tool capability scopes and filesystem/network boundaries
+  description: >-
+    Add fine-grained capability scopes (file_read, file_write, shell_exec, web_fetch)
+    and path/domain allowlists to PolicyGate tool validation.
+  spec_checkpoint: false
+  done_checkpoint: true
+  invoke_dev_with: >-
+    Ensure any tool attempt to write outside declared safe paths or fetch from unapproved
+    domains is blocked with an explicit policy.blocked event.
+
+- id: "6"
+  title: Implement watchdog supervisor for stuck and timed-out executions
+  description: >-
+    Add an OTP worker that monitors active executions against configured timeouts,
+    transitioning stalled tasks cleanly to timed_out and releasing locks.
+  spec_checkpoint: false
+  done_checkpoint: true
+  invoke_dev_with: >-
+    Run periodically under the AOS supervision tree; emit execution.timed_out timeline events.
+
+- id: "7"
+  title: Add historical execution search and timeline replay to LiveView dashboard
+  description: >-
+    Enable operators to browse, search, and replay historical execution timelines
+    and approval records on the Phoenix LiveView dashboard.
+  spec_checkpoint: false
+  done_checkpoint: true
+  invoke_dev_with: >-
+    Add execution list filtering by status (:succeeded, :failed, :suspended) on the
+    LiveView dashboard timeline view.

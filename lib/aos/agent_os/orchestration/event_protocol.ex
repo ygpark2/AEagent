@@ -5,12 +5,14 @@ defmodule AOS.AgentOS.Orchestration.EventProtocol do
     orchestration.started
     orchestration.completed
     orchestration.failed
+    orchestration.suspended
     orchestration.cancel_requested
     orchestration.cancelled
     node.ready
     node.started
     node.completed
     node.failed
+    node.suspended
     node.skipped
     join.released
     artifact.published

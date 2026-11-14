@@ -6,7 +6,7 @@ defmodule AOS.AgentOS.Core.Execution do
   import Ecto.Changeset
   alias AOS.AgentOS.Autonomy
 
-  @statuses ~w(queued running succeeded failed blocked)
+  @statuses ~w(queued running succeeded failed blocked suspended cancelled timed_out)
 
   def statuses, do: @statuses
 

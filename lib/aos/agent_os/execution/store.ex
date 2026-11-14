@@ -21,12 +21,35 @@ defmodule AOS.AgentOS.Execution.Store do
   def list_executions(opts \\ []) do
     limit = Keyword.get(opts, :limit, @default_limit)
     session_id = Keyword.get(opts, :session_id)
+    status = Keyword.get(opts, :status)
+    query_text = Keyword.get(opts, :query)
 
     Execution
     |> maybe_filter_by_session(session_id)
+    |> maybe_filter_by_status(status)
+    |> maybe_filter_by_query(query_text)
     |> order_by([e], desc: e.inserted_at)
     |> limit(^limit)
     |> Repo.all()
+  end
+
+  defp maybe_filter_by_status(query, nil), do: query
+  defp maybe_filter_by_status(query, "all"), do: query
+
+  defp maybe_filter_by_status(query, status) when is_binary(status) do
+    where(query, [e], e.status == ^status)
+  end
+
+  defp maybe_filter_by_status(query, statuses) when is_list(statuses) do
+    where(query, [e], e.status in ^statuses)
+  end
+
+  defp maybe_filter_by_query(query, nil), do: query
+  defp maybe_filter_by_query(query, ""), do: query
+
+  defp maybe_filter_by_query(query, search_term) when is_binary(search_term) do
+    like_term = "%#{search_term}%"
+    where(query, [e], like(e.task, ^like_term))
   end
 
   def list_sessions(opts \\ []) do

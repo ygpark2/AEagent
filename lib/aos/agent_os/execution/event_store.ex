@@ -22,6 +22,13 @@ defmodule AOS.AgentOS.Execution.EventStore do
     e in Ecto.ConstraintError -> {:error, e}
   end
 
+  def list_events(nil) do
+    Event
+    |> where([e], is_nil(e.execution_id))
+    |> order_by([e], asc: e.position, asc: e.inserted_at)
+    |> Repo.all()
+  end
+
   def list_events(execution_id) do
     Event
     |> where([e], e.execution_id == ^execution_id)

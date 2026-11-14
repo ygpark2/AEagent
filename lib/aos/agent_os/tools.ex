@@ -11,10 +11,22 @@ defmodule AOS.AgentOS.Tools do
     do:
       all_tools
       |> Enum.filter(&Registry.tool_enabled?(&1["server_id"], &1["name"]))
+      |> Enum.filter(&Registry.tool_available?(&1["server_id"], &1["name"]))
       |> Permissions.permitted_tools(selected_skills)
 
   def tool_permitted_for_skills?(server_id, tool_name, selected_skills),
     do: Permissions.tool_permitted_for_skills?(server_id, tool_name, selected_skills)
+
+  def tool_available?(server_id, tool_name),
+    do: Registry.tool_available?(server_id, tool_name)
+
+  def record_tool_result(server_id, tool_name, result),
+    do: Registry.record_tool_result(server_id, tool_name, result)
+
+  def registry_health_summary,
+    do: Registry.health_summary()
+
+  def tool_scope(tool_name), do: Permissions.tool_scope(tool_name)
 
   def effective_tool_names(selected_skills), do: Permissions.effective_tool_names(selected_skills)
 

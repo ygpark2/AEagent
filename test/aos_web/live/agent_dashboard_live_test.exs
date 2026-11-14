@@ -245,4 +245,69 @@ defmodule AOSWeb.AgentDashboardLiveTest do
     assert html =~ "Dashboard Settings"
     assert html =~ "22px"
   end
+
+  test "switches to executions tab, lists past executions, and filters by status", %{conn: conn} do
+    {:ok, exec1} = Executions.enqueue("search task one", start_immediately: false)
+    {:ok, _running} = Executions.mark_running(exec1.id)
+
+    {:ok, _succeeded} =
+      Executions.complete_execution(exec1.id, %{task: "search task one", result: "ok"})
+
+    {:ok, exec2} = Executions.enqueue("failed task two", start_immediately: false)
+    {:ok, _running2} = Executions.mark_running(exec2.id)
+
+    {:ok, _failed} =
+      Executions.fail_execution(exec2.id, %{task: "failed task two"}, :test_failure)
+
+    {:ok, view, _html} = live(conn, "/agent")
+
+    view
+    |> element(~s(button[phx-click="switch_right_tab"][phx-value-tab="executions"]))
+    |> render_click()
+
+    html = render(view)
+    assert html =~ "Historical Executions"
+    assert html =~ "search task one"
+    assert html =~ "failed task two"
+
+    # Filter by succeeded status
+    view
+    |> form("form[phx-change=\"filter_executions\"]", %{"status" => "succeeded"})
+    |> render_change()
+
+    html = render(view)
+    assert html =~ "search task one"
+    refute html =~ "failed task two"
+
+    # Filter by search query
+    view
+    |> form("form[phx-change=\"filter_executions\"]", %{"status" => "all", "query" => "failed"})
+    |> render_change()
+
+    html = render(view)
+    refute html =~ "search task one"
+    assert html =~ "failed task two"
+  end
+
+  test "selects an execution from the list and loads its chronological timeline", %{conn: conn} do
+    {:ok, exec} = Executions.enqueue("inspectable task", start_immediately: false)
+    {:ok, running} = Executions.mark_running(exec.id)
+
+    {:ok, _done} =
+      Executions.complete_execution(running.id, %{task: "inspectable task", result: "done"})
+
+    {:ok, view, _html} = live(conn, "/agent")
+
+    view
+    |> element(~s(button[phx-click="switch_right_tab"][phx-value-tab="executions"]))
+    |> render_click()
+
+    view
+    |> element(~s(div[phx-click="select_execution"][phx-value-id="#{exec.id}"]))
+    |> render_click()
+
+    html = render(view)
+    assert html =~ "Execution Timeline"
+    assert html =~ "execution: #{exec.id}"
+  end
 end

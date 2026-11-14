@@ -18,7 +18,8 @@ defmodule AOS.AgentOS.Executions do
   alias AOS.AgentOS.Evolution.{QualityEvaluator, StrategyEvaluator}
   alias AOS.AgentOS.Harness
   alias AOS.AgentOS.Goals.Processor, as: GoalProcessor
-  alias AOS.AgentOS.Orchestration.DAGEngine
+  alias AOS.AgentOS.Orchestration.{DAGEngine, DAGStore}
+  alias AOS.AgentOS.ToolUse.ApprovalQueue
   alias AOS.AgentOS.TaskSupervisor
 
   alias AOS.AgentOS.Execution.{
@@ -103,28 +104,38 @@ defmodule AOS.AgentOS.Executions do
   def resume_execution(execution_id, opts \\ []) do
     execution = Store.get_execution!(execution_id)
 
-    allowed_statuses = ~w(queued blocked failed)
+    allowed_statuses = ~w(queued blocked failed suspended)
     resume_mode = CheckpointService.normalize_resume_mode(Keyword.get(opts, :resume_mode))
 
     if execution.status in allowed_statuses do
-      checkpoint_context =
-        CheckpointService.checkpoint_resume_context(
-          execution.id,
-          Keyword.get(opts, :checkpoint_id),
-          resume_mode
-        )
+      if execution.engine in ["dag", :dag] do
+        case get_dag_run_by_execution(execution.id) do
+          nil ->
+            {:error, :dag_run_not_found}
 
-      enqueue(execution.task,
-        async: Keyword.get(opts, :async, true),
-        start_immediately: Keyword.get(opts, :start_immediately, true),
-        session_id: execution.session_id,
-        source_execution_id: execution.id,
-        workflow_id: execution.workflow_id,
-        trigger_kind: "resume",
-        initial_context: checkpoint_context,
-        autonomy_level: execution.autonomy_level,
-        engine: execution.engine
-      )
+          run ->
+            resume_dag_execution(execution, run, opts)
+        end
+      else
+        checkpoint_context =
+          CheckpointService.checkpoint_resume_context(
+            execution.id,
+            Keyword.get(opts, :checkpoint_id),
+            resume_mode
+          )
+
+        enqueue(execution.task,
+          async: Keyword.get(opts, :async, true),
+          start_immediately: Keyword.get(opts, :start_immediately, true),
+          session_id: execution.session_id,
+          source_execution_id: execution.id,
+          workflow_id: execution.workflow_id,
+          trigger_kind: "resume",
+          initial_context: checkpoint_context,
+          autonomy_level: execution.autonomy_level,
+          engine: execution.engine
+        )
+      end
     else
       {:error, "execution #{execution_id} is not resumable from status #{execution.status}"}
     end
@@ -253,6 +264,30 @@ defmodule AOS.AgentOS.Executions do
     end
   end
 
+  def suspend_execution(id, context, reason) do
+    context = QualityEvaluator.maybe_evaluate(context, "suspended")
+
+    with {:ok, execution} <-
+           Store.update_execution(id, execution_attrs_from_context(context, "suspended", reason)) do
+      update_session_status(execution.session_id, "suspended", execution.id)
+
+      append_execution_event(execution, "execution.suspended", "executions", %{
+        "reason" => reason_to_string(reason)
+      })
+
+      ArtifactRecorder.record_final_artifacts(execution, context)
+
+      StrategyEvaluator.record_outcome(
+        execution.strategy_id,
+        "suspended",
+        outcome_context(execution, context),
+        reason
+      )
+
+      {:ok, execution}
+    end
+  end
+
   def block_execution(id, context, reason) do
     context = QualityEvaluator.maybe_evaluate(context, "blocked")
     Harness.record_failure(id, reason, context)
@@ -312,6 +347,55 @@ defmodule AOS.AgentOS.Executions do
       {:ok, execution}
     end
   end
+
+  def timeout_execution(id, context \\ %{}, reason \\ :execution_timeout) do
+    with {:ok, execution} <- fetch_execution(id),
+         context = Map.merge(%{domain: execution.domain, task: execution.task}, context),
+         attrs = build_timeout_attrs(context, reason),
+         {:ok, updated} <- Store.update_execution(id, attrs) do
+      post_timeout_cleanup(updated, context, reason)
+      {:ok, updated}
+    end
+  end
+
+  defp fetch_execution(id) do
+    case Store.get_execution(id) do
+      nil -> {:error, :not_found}
+      execution -> {:ok, execution}
+    end
+  end
+
+  defp build_timeout_attrs(context, reason) do
+    reason_str = reason_to_string(reason)
+
+    execution_attrs_from_context(context, "timed_out", reason)
+    |> Map.put(:status, "timed_out")
+    |> Map.put(:failure_category, "timed_out")
+    |> Map.put(:error_message, "Execution timed out: #{reason_str}")
+    |> Map.put(:finished_at, DateTime.utc_now())
+  end
+
+  defp post_timeout_cleanup(updated, context, reason) do
+    reason_str = reason_to_string(reason)
+    update_session_status(updated.session_id, "failed", updated.id)
+    append_execution_event(updated, "execution.timed_out", "watchdog", %{"reason" => reason_str})
+    GoalProcessor.handle_execution_terminal(updated)
+    ArtifactRecorder.record_final_artifacts(updated, context)
+    ApprovalQueue.cancel_pending_for_execution(updated.id, "Execution timed out")
+    maybe_timeout_dag_run(updated)
+    Notifier.notify_terminal_event(context, updated)
+    Notifier.dispatch_slack_response(updated)
+    Harness.finish(updated.id, "failed", context, reason)
+  end
+
+  defp maybe_timeout_dag_run(%Execution{engine: "dag"} = updated) do
+    case DAGStore.get_run_by_execution(updated.id) do
+      nil -> :ok
+      run -> DAGStore.update_run(run.id, %{status: "timed_out"})
+    end
+  end
+
+  defp maybe_timeout_dag_run(_), do: :ok
 
   def run_existing_execution(execution_id, task, opts \\ []) do
     notify_pid = Keyword.get(opts, :notify)
@@ -540,6 +624,21 @@ defmodule AOS.AgentOS.Executions do
     end
 
     run_or_spawn(execution, runner, async?)
+  end
+
+  defp resume_dag_execution(execution, run, opts) do
+    start_immediately? = Keyword.get(opts, :start_immediately, true)
+    async? = Keyword.get(opts, :async, true)
+
+    if start_immediately? do
+      runner = fn ->
+        DAGEngine.resume(run.id, opts)
+      end
+
+      run_or_spawn(execution, runner, async?)
+    else
+      {:ok, execution}
+    end
   end
 
   defp run_or_spawn(execution, runner, true) do

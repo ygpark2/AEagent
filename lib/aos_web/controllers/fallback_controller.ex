@@ -47,6 +47,14 @@ defmodule AOSWeb.FallbackController do
     |> halt()
   end
 
+  def call(conn, {:error, :dag_run_not_found}) do
+    conn
+    |> put_status(404)
+    |> put_view(AOSWeb.ErrorView)
+    |> render("404.json-api", %{error: "dag_run_not_found"})
+    |> halt()
+  end
+
   def call(conn, nil), do: call(conn, {:error, :not_found})
 
   def call(conn, params) do

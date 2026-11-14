@@ -4,7 +4,7 @@ defmodule AOS.AgentOS.Core.DAGNode do
   use AOS.Schema
   import Ecto.Changeset
 
-  @statuses ~w(pending ready running succeeded failed skipped cancelled)
+  @statuses ~w(pending ready running succeeded failed skipped cancelled suspended)
 
   schema "agent_dag_nodes" do
     field :dag_run_id, Ecto.UUID

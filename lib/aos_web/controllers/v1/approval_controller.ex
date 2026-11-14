@@ -28,7 +28,7 @@ defmodule AOSWeb.V1.ApprovalController do
   end
 
   def approve(conn, %{"id" => id} = params) do
-    attrs = decision_attrs(params)
+    attrs = decision_attrs(params) |> Map.put(:resume, false)
 
     with {:ok, request} <- ApprovalQueue.approve(id, attrs),
          {:ok, resumed_execution} <- maybe_resume(request, params) do
@@ -59,7 +59,8 @@ defmodule AOSWeb.V1.ApprovalController do
         async: Map.get(params, "wait", false) != true,
         start_immediately: Map.get(params, "start_immediately", true) == true,
         checkpoint_id: Map.get(params, "checkpoint_id"),
-        resume_mode: Map.get(params, "resume_mode")
+        resume_mode: Map.get(params, "resume_mode"),
+        approval_request: request
       )
     else
       {:ok, nil}

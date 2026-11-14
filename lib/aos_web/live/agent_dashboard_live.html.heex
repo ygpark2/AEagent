@@ -122,6 +122,13 @@
         >
           Timeline
         </button>
+        <button
+          phx-click="switch_right_tab"
+          phx-value-tab="executions"
+          class={"px-3 py-2 text-xs font-bold uppercase tracking-wider rounded #{if @active_right_tab == :executions, do: "bg-blue-900/40 text-blue-300 border border-blue-800", else: "text-gray-500 hover:text-gray-300"}"}
+        >
+          Executions
+        </button>
       </div>
     </div>
     
@@ -260,12 +267,78 @@
               </div>
             <% end %>
           <% else %>
-            <%= if @active_diff == "" do %>
-              <div class="h-full flex items-center justify-center text-gray-600 italic text-center px-4" style={"font-size: #{@ui_settings["right_font_size"]}px;"}>
-                Select a file or wait for agent modifications to view details here.
+            <%= if @active_right_tab == :executions do %>
+              <div class="flex items-center justify-between mb-4">
+                <h3 class="text-xl font-bold text-blue-300 uppercase tracking-wider">Historical Executions</h3>
+                <button phx-click="switch_right_tab" phx-value-tab="executions" class="text-lg text-gray-300 hover:text-white px-4 py-2 rounded bg-gray-900 border border-gray-700">
+                  Refresh
+                </button>
               </div>
+
+              <form phx-change="filter_executions" class="mb-4 space-y-2">
+                <div class="flex gap-2">
+                  <select name="status" class="bg-gray-900 border border-gray-700 text-gray-200 text-sm rounded px-3 py-1.5 focus:outline-none focus:border-blue-500">
+                    <option value="all" selected={@execution_filter_status == "all"}>All Statuses</option>
+                    <option value="succeeded" selected={@execution_filter_status == "succeeded"}>Succeeded</option>
+                    <option value="failed" selected={@execution_filter_status == "failed"}>Failed</option>
+                    <option value="suspended" selected={@execution_filter_status == "suspended"}>Suspended</option>
+                    <option value="timed_out" selected={@execution_filter_status == "timed_out"}>Timed Out</option>
+                    <option value="running" selected={@execution_filter_status == "running"}>Running</option>
+                  </select>
+                  <input
+                    type="text"
+                    name="query"
+                    placeholder="Search by task..."
+                    value={@execution_search_query}
+                    class="flex-1 bg-gray-900 border border-gray-700 text-gray-200 text-sm rounded px-3 py-1.5 focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+              </form>
+
+              <%= if @historical_executions == [] do %>
+                <div class="h-full flex items-center justify-center text-gray-600 italic text-center px-4" style={"font-size: #{@ui_settings["right_font_size"]}px;"}>
+                  No matching executions found.
+                </div>
+              <% else %>
+                <div class="space-y-2 overflow-y-auto max-h-[calc(100vh-280px)]">
+                  <%= for exec <- @historical_executions do %>
+                    <div
+                      phx-click="select_execution"
+                      phx-value-id={exec.id}
+                      class={"cursor-pointer bg-gray-900 border rounded-lg p-3 hover:border-blue-600 transition #{if @current_execution_id == exec.id, do: "border-blue-500 ring-1 ring-blue-500", else: "border-gray-800"}"}
+                    >
+                      <div class="flex items-center justify-between gap-2">
+                        <span class={"text-xs font-bold uppercase tracking-wide px-2 py-0.5 rounded #{case exec.status do
+                          "succeeded" -> "bg-emerald-950 text-emerald-400 border border-emerald-800"
+                          "failed" -> "bg-rose-950 text-rose-400 border border-rose-800"
+                          "suspended" -> "bg-amber-950 text-amber-400 border border-amber-800"
+                          "timed_out" -> "bg-red-950 text-red-400 border border-red-800"
+                          "running" -> "bg-cyan-950 text-cyan-400 border border-cyan-800 animate-pulse"
+                          _ -> "bg-gray-800 text-gray-400 border border-gray-700"
+                        end}"}>
+                          <%= exec.status %>
+                        </span>
+                        <span class="text-[11px] text-gray-500 shrink-0">
+                          <%= Calendar.strftime(exec.inserted_at, "%m/%d %H:%M:%S") %>
+                        </span>
+                      </div>
+                      <div class="mt-2 text-sm text-gray-200 line-clamp-2"><%= exec.task %></div>
+                      <div class="mt-1 flex items-center justify-between text-xs text-gray-500">
+                        <span>engine: <%= exec.engine %></span>
+                        <span class="text-blue-400 hover:underline">View Timeline &rarr;</span>
+                      </div>
+                    </div>
+                  <% end %>
+                </div>
+              <% end %>
             <% else %>
-              <pre class="text-gray-300 whitespace-pre-wrap leading-snug" style={"font-size: #{@ui_settings["right_font_size"]}px;"}><%= @active_diff %></pre>
+              <%= if @active_diff == "" do %>
+                <div class="h-full flex items-center justify-center text-gray-600 italic text-center px-4" style={"font-size: #{@ui_settings["right_font_size"]}px;"}>
+                  Select a file or wait for agent modifications to view details here.
+                </div>
+              <% else %>
+                <pre class="text-gray-300 whitespace-pre-wrap leading-snug" style={"font-size: #{@ui_settings["right_font_size"]}px;"}><%= @active_diff %></pre>
+              <% end %>
             <% end %>
           <% end %>
         <% end %>

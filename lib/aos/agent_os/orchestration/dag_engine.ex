@@ -2,9 +2,12 @@ defmodule AOS.AgentOS.Orchestration.DAGEngine do
   @moduledoc "Durable fan-out/fan-in DAG execution engine."
 
   alias AOS.AgentOS.Core.{DAGRun, Graph, PolicyGate}
-  alias AOS.AgentOS.Execution.ArtifactRecorder
+  alias AOS.AgentOS.Execution.{ArtifactRecorder, ResumeContext}
   alias AOS.AgentOS.Executions
   alias AOS.AgentOS.Harness
+  alias AOS.AgentOS.ToolUse.{ApprovalQueue, ApprovalRequest}
+  alias AOS.Repo
+  import Ecto.Query
 
   alias AOS.AgentOS.Orchestration.{
     DAGDefinition,
@@ -33,7 +36,7 @@ defmodule AOS.AgentOS.Orchestration.DAGEngine do
         %DAGRun{status: status} = run when status in ~w(succeeded failed blocked cancelled) ->
           {:ok, terminal_context(initial_context, run)}
 
-        %DAGRun{status: status} = run when status in ~w(queued running) ->
+        %DAGRun{status: status} = run when status in ~w(queued running suspended) ->
           {:error, {:dag_already_running, run.id, status}}
       end
     end
@@ -65,9 +68,20 @@ defmodule AOS.AgentOS.Orchestration.DAGEngine do
       nil ->
         {:error, :dag_run_not_found}
 
+      %DAGRun{status: status} = run when status in ~w(queued running) ->
+        {:error, {:dag_already_running, run.id, status}}
+
       %DAGRun{} = run ->
         with {:ok, dag} <- DAGDefinition.normalize(run.definition) do
-          context = restore_context(run.base_context) |> Map.put(:execution_id, run.execution_id)
+          approval_context = resolve_approval_context(run, opts)
+
+          context =
+            run.base_context
+            |> restore_context()
+            |> Map.put(:execution_id, run.execution_id)
+            |> Map.merge(approval_context)
+
+          Executions.mark_running(run.execution_id)
           execute_or_return(dag, context, run, opts)
         end
     end
@@ -84,7 +98,7 @@ defmodule AOS.AgentOS.Orchestration.DAGEngine do
       %{status: status} = run when status in ~w(succeeded failed blocked cancelled) ->
         {:ok, run}
 
-      %{status: status} = run when status in ~w(queued running) ->
+      %{status: status} = run when status in ~w(queued running suspended) ->
         {:error, {:dag_already_running, run.id, status}}
 
       nil ->
@@ -112,7 +126,7 @@ defmodule AOS.AgentOS.Orchestration.DAGEngine do
              orchestrator_id: orchestrator_id,
              status: "running",
              definition: DAGDefinition.serialize(dag),
-             base_context: json_value(context),
+             base_context: persistable_context(context),
              retry_policy: Keyword.get(opts, :retry_policy, %{}),
              timeout_ms: timeout_ms,
              idempotency_key: idempotency_key,
@@ -171,7 +185,9 @@ defmodule AOS.AgentOS.Orchestration.DAGEngine do
       {:ok, terminal_context(context, run)}
     else
       states = load_states(run.id)
-      orchestrate(dag, context, run, states, %{}, [], monotonic_ms(), opts)
+      contexts = initial_resumed_contexts(states)
+      history = initial_resumed_history(states, Map.get(context, :execution_history, []))
+      orchestrate(dag, context, run, states, contexts, history, monotonic_ms(), opts)
     end
   end
 
@@ -208,27 +224,41 @@ defmodule AOS.AgentOS.Orchestration.DAGEngine do
           {next_states, next_contexts, next_history} =
             apply_results(dag, run, ready_states, results, contexts, history)
 
-          if fail_fast?(dag) and
-               Enum.any?(next_states, fn {_id, state} -> state.status == "failed" end) do
-            finish_failed(
-              run,
-              base_context,
-              next_states,
-              next_contexts,
-              next_history,
-              failed_reason(next_states)
-            )
-          else
-            orchestrate(
-              dag,
-              base_context,
-              run,
-              next_states,
-              next_contexts,
-              next_history,
-              started_at,
-              opts
-            )
+          cond do
+            suspended_state =
+                Enum.find(next_states, fn {_id, state} -> state.status == "suspended" end) ->
+              {_suspended_node_id, suspended_node} = suspended_state
+
+              finish_suspended(
+                run,
+                base_context,
+                next_contexts,
+                next_history,
+                suspended_node.error
+              )
+
+            fail_fast?(dag) and
+                Enum.any?(next_states, fn {_id, state} -> state.status == "failed" end) ->
+              finish_failed(
+                run,
+                base_context,
+                next_states,
+                next_contexts,
+                next_history,
+                failed_reason(next_states)
+              )
+
+            true ->
+              orchestrate(
+                dag,
+                base_context,
+                run,
+                next_states,
+                next_contexts,
+                next_history,
+                started_at,
+                opts
+              )
           end
         end
     end
@@ -338,38 +368,75 @@ defmodule AOS.AgentOS.Orchestration.DAGEngine do
           }
 
         {:error, reason, failed_context, attempt} ->
-          step = step_record(node_id, :error, failed_context)
-          next_history = history_acc ++ [step]
-          node_context = Map.put(failed_context, :execution_history, next_history)
+          case reason do
+            {:approval_required, _} ->
+              step = step_record(node_id, :approval_required, failed_context)
+              next_history = history_acc ++ [step]
+              node_context = Map.put(failed_context, :execution_history, next_history)
 
-          DAGStore.update_node(state.record, %{
-            status: "failed",
-            outcome: "error",
-            attempt: attempt,
-            output: node_output(node_context),
-            error_message: inspect(reason),
-            finished_at: DateTime.utc_now()
-          })
-
-          ArtifactRecorder.record_step_artifact(node_context, node_id, nil)
-
-          emit(run, "node.failed", %{
-            node_id: node_id,
-            payload: %{reason: inspect(reason), attempt: attempt}
-          })
-
-          {
-            Map.put(state_acc, node_id, %{
-              state
-              | status: "failed",
-                outcome: "error",
-                context: node_context,
+              DAGStore.update_node(state.record, %{
+                status: "suspended",
+                outcome: "approval_required",
                 attempt: attempt,
-                error: reason
-            }),
-            Map.put(context_acc, node_id, node_context),
-            next_history
-          }
+                output: node_output(node_context),
+                error_message: inspect(reason),
+                finished_at: DateTime.utc_now()
+              })
+
+              ArtifactRecorder.record_step_artifact(node_context, node_id, nil)
+
+              emit(run, "node.suspended", %{
+                node_id: node_id,
+                payload: %{reason: inspect(reason), attempt: attempt}
+              })
+
+              {
+                Map.put(state_acc, node_id, %{
+                  state
+                  | status: "suspended",
+                    outcome: "approval_required",
+                    context: node_context,
+                    attempt: attempt,
+                    error: reason
+                }),
+                Map.put(context_acc, node_id, node_context),
+                next_history
+              }
+
+            _ ->
+              step = step_record(node_id, :error, failed_context)
+              next_history = history_acc ++ [step]
+              node_context = Map.put(failed_context, :execution_history, next_history)
+
+              DAGStore.update_node(state.record, %{
+                status: "failed",
+                outcome: "error",
+                attempt: attempt,
+                output: node_output(node_context),
+                error_message: inspect(reason),
+                finished_at: DateTime.utc_now()
+              })
+
+              ArtifactRecorder.record_step_artifact(node_context, node_id, nil)
+
+              emit(run, "node.failed", %{
+                node_id: node_id,
+                payload: %{reason: inspect(reason), attempt: attempt}
+              })
+
+              {
+                Map.put(state_acc, node_id, %{
+                  state
+                  | status: "failed",
+                    outcome: "error",
+                    context: node_context,
+                    attempt: attempt,
+                    error: reason
+                }),
+                Map.put(context_acc, node_id, node_context),
+                next_history
+              }
+          end
 
         {:cancelled, cancelled_context, attempt} ->
           next_history = history_acc
@@ -494,11 +561,44 @@ defmodule AOS.AgentOS.Orchestration.DAGEngine do
     do: finish_failed(run, base_context, states, %{}, history, reason)
 
   defp finish_failed(run, base_context, _states, contexts, history, reason) do
-    if PolicyGate.blocking_reason?(reason) do
-      finish_blocked(run, base_context, contexts, history, reason)
-    else
-      finish_failed_run(run, base_context, contexts, history, reason)
+    case reason do
+      {:approval_required, _} ->
+        finish_suspended(run, base_context, contexts, history, reason)
+
+      _ ->
+        if PolicyGate.blocking_reason?(reason) do
+          finish_blocked(run, base_context, contexts, history, reason)
+        else
+          finish_failed_run(run, base_context, contexts, history, reason)
+        end
     end
+  end
+
+  defp finish_suspended(run, base_context, contexts, history, reason) do
+    final_context = final_context(base_context, contexts, history)
+
+    case reason do
+      {:approval_required, request} ->
+        ensure_approval_request(run, final_context, request)
+
+      _ ->
+        :ok
+    end
+
+    DAGStore.update_run(run.id, %{
+      status: "suspended",
+      base_context: persistable_context(final_context),
+      result: node_output(final_context),
+      error_message: inspect(reason),
+      heartbeat_at: DateTime.utc_now()
+    })
+
+    emit(run, "orchestration.suspended", %{
+      payload: %{status: "suspended", reason: inspect(reason)}
+    })
+
+    Executions.suspend_execution(run.execution_id, final_context, reason)
+    {:error, :dag, reason, final_context}
   end
 
   defp finish_failed_run(run, base_context, contexts, history, reason) do
@@ -555,12 +655,13 @@ defmodule AOS.AgentOS.Orchestration.DAGEngine do
          status: recoverable_status(record.status),
          outcome: record.outcome,
          attempt: record.attempt,
+         error: nil,
          context: %{}
        }}
     end)
   end
 
-  defp recoverable_status(status) when status in ["ready", "running"], do: "pending"
+  defp recoverable_status(status) when status in ["ready", "running", "suspended"], do: "pending"
   defp recoverable_status(status), do: status
 
   defp mark_ready(dag, states, ready, run) do
@@ -586,16 +687,41 @@ defmodule AOS.AgentOS.Orchestration.DAGEngine do
   end
 
   defp node_context(dag, run, node_id, base_context, contexts, history) do
-    predecessors = DAGDefinition.predecessors(dag, node_id) |> Enum.map(& &1.from) |> Enum.uniq()
+    history_order =
+      history
+      |> Enum.map(fn
+        %{node_id: id} -> to_string(id)
+        %{"node_id" => id} -> to_string(id)
+        _ -> nil
+      end)
+      |> Enum.reject(&is_nil/1)
 
-    predecessor_contexts =
-      Enum.map(predecessors, &Map.get(contexts, &1)) |> Enum.reject(&is_nil/1)
+    predecessors =
+      DAGDefinition.predecessors(dag, node_id)
+      |> Enum.map(& &1.from)
+      |> Enum.uniq()
+      |> Enum.sort_by(fn pred ->
+        case Enum.find_index(history_order, &(&1 == to_string(pred))) do
+          nil -> {1, to_string(pred)}
+          idx -> {0, idx}
+        end
+      end)
 
-    inherited = Enum.reduce(predecessor_contexts, base_context, &Map.merge(&2, &1))
+    predecessor_entries =
+      Enum.map(predecessors, fn pred ->
+        ctx = Map.get(contexts, pred) || Map.get(contexts, to_string(pred))
+        {pred, ctx}
+      end)
+      |> Enum.reject(fn {_pred, ctx} -> is_nil(ctx) or ctx == %{} end)
+
+    inherited = merge_predecessor_contexts(base_context, predecessor_entries)
 
     inputs =
       Map.new(predecessors, fn predecessor ->
-        predecessor_context = Map.get(contexts, predecessor, %{})
+        predecessor_context =
+          Map.get(contexts, predecessor) ||
+            Map.get(contexts, to_string(predecessor), %{})
+
         {to_string(predecessor), node_output(predecessor_context)}
       end)
 
@@ -605,29 +731,228 @@ defmodule AOS.AgentOS.Orchestration.DAGEngine do
     |> Map.put(:graph_nodes, dag.nodes)
     |> Map.put(:execution_history, history)
     |> Map.put(:dag_inputs, inputs)
+    |> Map.put(:inputs, inputs)
     |> maybe_put_dag_result(inputs)
   end
 
-  defp maybe_put_dag_result(context, inputs) when map_size(inputs) == 0, do: context
+  defp maybe_put_dag_result(context, inputs) when map_size(inputs) <= 1, do: context
 
   defp maybe_put_dag_result(context, inputs) do
-    rendered =
-      inputs
-      |> Enum.map_join("\n\n", fn {node_id, output} -> "[#{node_id}]\n#{inspect(output)}" end)
+    results =
+      Enum.filter(inputs, fn {_node_id, output} ->
+        Map.has_key?(output, "result") or Map.has_key?(output, :result)
+      end)
 
-    Map.put(context, :result, rendered)
+    if results == [] do
+      context
+    else
+      rendered =
+        results
+        |> Enum.map_join("\n\n", fn {node_id, output} ->
+          val = Map.get(output, "result", Map.get(output, :result))
+          "[#{node_id}]\n#{inspect(val)}"
+        end)
+
+      Map.put(context, :result, rendered)
+    end
   end
 
-  defp final_context(base_context, contexts, history) do
-    last_context =
-      contexts
-      |> Map.values()
-      |> Enum.reverse()
-      |> Enum.find(&Map.has_key?(&1, :result)) || %{}
+  defp merge_predecessor_contexts(base_context, predecessor_entries) do
+    case predecessor_entries do
+      [] ->
+        base_context
+
+      [{pred_id, pred_ctx}] ->
+        merge_single_predecessor(base_context, pred_id, pred_ctx)
+
+      _multiple ->
+        merge_parallel_predecessors(base_context, predecessor_entries)
+    end
+  end
+
+  defp merge_single_predecessor(base_context, pred_id, pred_ctx) do
+    existing_node_outputs = get_node_outputs(base_context)
+    inherited_node_outputs = get_node_outputs(pred_ctx)
+
+    node_outputs =
+      existing_node_outputs
+      |> Map.merge(inherited_node_outputs)
+      |> Map.put(to_string(pred_id), pred_ctx)
+
+    artifacts =
+      (extract_artifacts(base_context) ++ extract_artifacts(pred_ctx))
+      |> Enum.uniq()
+
+    merged =
+      base_context
+      |> Map.merge(pred_ctx)
+      |> maybe_put_artifacts(artifacts, [base_context, pred_ctx])
+      |> Map.put(:node_outputs, node_outputs)
+
+    merged
+  end
+
+  defp merge_parallel_predecessors(base_context, predecessor_entries) do
+    contexts_list = Enum.map(predecessor_entries, &elem(&1, 1))
+
+    existing_node_outputs =
+      [base_context | contexts_list]
+      |> Enum.reduce(%{}, fn ctx, acc -> Map.merge(acc, get_node_outputs(ctx)) end)
+
+    node_outputs =
+      Enum.reduce(predecessor_entries, existing_node_outputs, fn {pred_id, pred_ctx}, acc ->
+        Map.put(acc, to_string(pred_id), pred_ctx)
+      end)
+
+    artifacts =
+      [base_context | contexts_list]
+      |> Enum.flat_map(&extract_artifacts/1)
+      |> Enum.uniq()
+
+    accumulated = Enum.reduce(contexts_list, %{}, &merge_contexts/2)
 
     base_context
+    |> merge_contexts(accumulated)
+    |> Map.put(:node_outputs, node_outputs)
+    |> Map.put(:artifacts, artifacts)
+  end
+
+  defp get_node_outputs(context) when is_map(context) do
+    case Map.get(context, :node_outputs) || Map.get(context, "node_outputs") do
+      m when is_map(m) -> m
+      _ -> %{}
+    end
+  end
+
+  defp get_node_outputs(_), do: %{}
+
+  defp maybe_put_artifacts(merged, artifacts, contexts_to_check) do
+    should_put? =
+      artifacts != [] or
+        Enum.any?(contexts_to_check, fn ctx ->
+          is_map(ctx) and (Map.has_key?(ctx, :artifacts) or Map.has_key?(ctx, "artifacts"))
+        end)
+
+    if should_put?, do: Map.put(merged, :artifacts, artifacts), else: merged
+  end
+
+  defp merge_contexts(ctx1, ctx2) when is_map(ctx1) and is_map(ctx2) do
+    Map.merge(ctx1, ctx2, fn
+      key, v1, v2 when key in [:artifacts, "artifacts"] ->
+        (List.wrap(v1) ++ List.wrap(v2)) |> Enum.uniq()
+
+      key, v1, v2 when key in [:node_outputs, "node_outputs"] and is_map(v1) and is_map(v2) ->
+        Map.merge(v1, v2)
+
+      _key, v1, v2 when is_list(v1) and is_list(v2) ->
+        Enum.uniq(v1 ++ v2)
+
+      _key, v1, v2 when is_map(v1) and is_map(v2) and not is_struct(v1) and not is_struct(v2) ->
+        merge_contexts(v1, v2)
+
+      _key, _v1, v2 ->
+        v2
+    end)
+  end
+
+  defp merge_contexts(ctx1, _ctx2) when is_map(ctx1), do: ctx1
+  defp merge_contexts(_ctx1, ctx2) when is_map(ctx2), do: ctx2
+  defp merge_contexts(ctx1, _ctx2), do: ctx1
+
+  defp extract_artifacts(context) when is_map(context) do
+    artifacts =
+      case Map.get(context, :artifacts) do
+        nil -> Map.get(context, "artifacts")
+        val -> val
+      end
+
+    case artifacts do
+      nil -> []
+      list when is_list(list) -> list
+      single -> [single]
+    end
+  end
+
+  defp extract_artifacts(_), do: []
+
+  defp final_context(base_context, contexts, history) do
+    all_contexts = build_all_contexts(contexts, history)
+
+    last_context =
+      all_contexts
+      |> Enum.reverse()
+      |> Enum.find(&(Map.has_key?(&1, :result) or Map.has_key?(&1, "result"))) || %{}
+
+    all_artifacts =
+      [base_context | all_contexts]
+      |> Enum.flat_map(&extract_artifacts/1)
+      |> Enum.uniq()
+
+    all_node_outputs = extract_all_node_outputs(base_context, contexts, all_contexts)
+
+    accumulated = Enum.reduce(all_contexts, %{}, &merge_contexts/2)
+
+    base_context
+    |> merge_contexts(accumulated)
     |> Map.merge(last_context)
     |> Map.put(:execution_history, history)
+    |> maybe_put_node_outputs(all_node_outputs)
+    |> maybe_put_artifacts(all_artifacts, [base_context | all_contexts])
+  end
+
+  defp build_all_contexts(contexts, history) do
+    ordered_node_ids =
+      history
+      |> Enum.map(fn
+        %{node_id: id} -> to_string(id)
+        %{"node_id" => id} -> to_string(id)
+        _ -> nil
+      end)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+
+    ordered_contexts =
+      Enum.map(ordered_node_ids, fn id ->
+        Map.get(contexts, id) ||
+          try_existing_atom(id, fn atom -> Map.get(contexts, atom) end)
+      end)
+      |> Enum.reject(&is_nil/1)
+
+    if ordered_contexts != [] do
+      remaining =
+        contexts
+        |> Enum.reject(fn {k, _v} -> to_string(k) in ordered_node_ids end)
+        |> Enum.map(&elem(&1, 1))
+
+      ordered_contexts ++ remaining
+    else
+      Map.values(contexts)
+    end
+  end
+
+  defp extract_all_node_outputs(base_context, contexts, all_contexts) do
+    existing =
+      [base_context | all_contexts]
+      |> Enum.reduce(%{}, fn ctx, acc -> Map.merge(acc, get_node_outputs(ctx)) end)
+
+    Enum.reduce(contexts, existing, fn {node_id, ctx}, acc ->
+      if is_nil(ctx) or ctx == %{} do
+        acc
+      else
+        Map.put(acc, to_string(node_id), ctx)
+      end
+    end)
+  end
+
+  defp maybe_put_node_outputs(context, node_outputs) do
+    if node_outputs != %{}, do: Map.put(context, :node_outputs, node_outputs), else: context
+  end
+
+  defp try_existing_atom(binary, fun) when is_binary(binary) do
+    atom = String.to_existing_atom(binary)
+    fun.(atom)
+  rescue
+    ArgumentError -> nil
   end
 
   defp terminal_context(context, run) do
@@ -637,42 +962,329 @@ defmodule AOS.AgentOS.Orchestration.DAGEngine do
     |> Map.put(:result, get_in(run.result || %{}, ["result"]) || Map.get(context, :result))
   end
 
-  defp restore_context(context) when is_map(context) do
-    Enum.reduce(
-      ~w(task history feedback result execution_result cost_usd estimated_cost selected_skills skills goal_id goal_event_id goal_run_id goal_name goal_objective goal_success_criteria goal_constraints goal_context goal_event execution_id workflow_id session_id autonomy_level strategy_id domain engine)a,
-      context,
-      fn key, acc ->
-        string_key = Atom.to_string(key)
-
-        if Map.has_key?(acc, string_key),
-          do: Map.put(acc, key, Map.get(acc, string_key)),
-          else: acc
-      end
-    )
+  def persistable_context(%ResumeContext{} = context) do
+    context |> ResumeContext.to_map() |> persistable_context()
   end
 
-  defp restore_context(context), do: context
+  def persistable_context(context) when is_map(context) do
+    Enum.reduce(context, %{}, fn {key, value}, acc ->
+      Map.put(acc, to_string(key), json_value(value))
+    end)
+  end
+
+  def persistable_context(other), do: other
+
+  def restore_context(context) when is_map(context) do
+    Enum.reduce(context, %{}, fn {key, value}, acc ->
+      atom_key = atomize_key(key)
+
+      restored_value =
+        cond do
+          atom_key == :execution_history or key == "execution_history" ->
+            restore_execution_history(value)
+
+          (atom_key == :node_outputs or key == "node_outputs") and is_map(value) ->
+            restore_node_outputs(value)
+
+          atom_key == :artifacts or key == "artifacts" ->
+            restore_artifacts(value)
+
+          (atom_key == :inputs or key == "inputs") and is_map(value) ->
+            restore_node_outputs(value)
+
+          true ->
+            value
+        end
+
+      acc
+      |> Map.put(key, restored_value)
+      |> Map.put(atom_key, restored_value)
+    end)
+  end
+
+  def restore_context(context), do: context
+
+  defp restore_node_outputs(node_outputs) when is_map(node_outputs) do
+    Enum.reduce(node_outputs, %{}, fn {node_id, output}, acc ->
+      restored_output = restore_output_map(output)
+      atom_id = atomize_key(node_id)
+
+      acc
+      |> Map.put(to_string(node_id), restored_output)
+      |> Map.put(atom_id, restored_output)
+    end)
+  end
+
+  defp restore_node_outputs(other), do: other
+
+  defp restore_output_map(output) when is_map(output) and not is_struct(output) do
+    Enum.reduce(output, %{}, fn {k, v}, acc ->
+      atom_k = atomize_key(k)
+
+      restored_v =
+        if atom_k == :artifacts or k == "artifacts",
+          do: restore_artifacts(v),
+          else: v
+
+      acc
+      |> Map.put(k, restored_v)
+      |> Map.put(atom_k, restored_v)
+    end)
+  end
+
+  defp restore_output_map(output), do: output
+
+  defp restore_artifacts(artifacts) when is_list(artifacts) do
+    Enum.map(artifacts, &restore_artifact/1)
+  end
+
+  defp restore_artifacts(artifact) when is_map(artifact) do
+    restore_artifact(artifact)
+  end
+
+  defp restore_artifacts(other), do: other
+
+  defp restore_artifact(map) when is_map(map) and not is_struct(map) do
+    Enum.reduce(map, %{}, fn {k, v}, acc ->
+      atom_k = atomize_key(k)
+
+      restored_v =
+        if is_map(v) and not is_struct(v) and k in ["payload", :payload, "metadata", :metadata] do
+          restore_artifact(v)
+        else
+          v
+        end
+
+      acc
+      |> Map.put(k, restored_v)
+      |> Map.put(atom_k, restored_v)
+    end)
+  end
+
+  defp restore_artifact(other), do: other
+
+  defp atomize_key(k) when is_atom(k), do: k
+
+  defp atomize_key(k) when is_binary(k) do
+    String.to_existing_atom(k)
+  rescue
+    ArgumentError -> k
+  end
+
+  defp atomize_key(k), do: k
+
+  defp restore_execution_history(history) when is_list(history) do
+    Enum.map(history, fn
+      %{} = step ->
+        node_id = Map.get(step, :node_id, Map.get(step, "node_id"))
+        outcome = Map.get(step, :outcome, Map.get(step, "outcome"))
+        feedback = Map.get(step, :feedback, Map.get(step, "feedback"))
+        timestamp = Map.get(step, :timestamp, Map.get(step, "timestamp"))
+
+        %{
+          :node_id => node_id,
+          "node_id" => node_id,
+          :outcome => outcome,
+          "outcome" => outcome,
+          :feedback => feedback,
+          "feedback" => feedback,
+          :timestamp => timestamp,
+          "timestamp" => timestamp
+        }
+
+      other ->
+        other
+    end)
+  end
+
+  defp restore_execution_history(other), do: other
 
   defp step_record(node_id, outcome, context) do
     %{
       node_id: node_id,
       outcome: outcome,
-      feedback: Map.get(context, :feedback),
+      feedback: Map.get(context, :feedback, Map.get(context, "feedback")),
       timestamp: DateTime.utc_now()
     }
   end
 
   defp node_output(context) do
-    %{
-      "result" => json_value(Map.get(context, :result)),
-      "last_outcome" => json_value(Map.get(context, :last_outcome)),
-      "feedback" => json_value(Map.get(context, :feedback)),
-      "evaluation_score" => json_value(Map.get(context, :evaluation_score)),
-      "evaluation_feedback" => json_value(Map.get(context, :evaluation_feedback))
-    }
-    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-    |> Map.new()
+    standard =
+      %{
+        "result" => json_value(Map.get(context, :result, Map.get(context, "result"))),
+        "last_outcome" =>
+          json_value(Map.get(context, :last_outcome, Map.get(context, "last_outcome"))),
+        "feedback" => json_value(Map.get(context, :feedback, Map.get(context, "feedback"))),
+        "evaluation_score" =>
+          json_value(Map.get(context, :evaluation_score, Map.get(context, "evaluation_score"))),
+        "evaluation_feedback" =>
+          json_value(
+            Map.get(context, :evaluation_feedback, Map.get(context, "evaluation_feedback"))
+          )
+      }
+      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+      |> Map.new()
+
+    system_keys = ~w(
+      harness_manifest harness_budget_state graph_nodes dag_nodes dag_run_id
+      dag_node_id execution_history dag_inputs inputs node_outputs notify task session_id
+      execution_id workflow_id strategy_id engine domain autonomy_level
+    )
+
+    custom =
+      context
+      |> Enum.reject(fn {k, _v} ->
+        str = to_string(k)
+        str in system_keys or String.starts_with?(str, "harness_")
+      end)
+      |> Enum.map(fn {k, v} -> {to_string(k), json_value(v)} end)
+      |> Map.new()
+
+    Map.merge(custom, standard)
   end
+
+  defp resolve_approval_context(run, opts) do
+    explicit =
+      Keyword.get(opts, :approval_request) ||
+        Keyword.get(opts, :approved_request) ||
+        Keyword.get(opts, :approval)
+
+    latest =
+      cond do
+        explicit ->
+          explicit
+
+        run.execution_id ->
+          ApprovalRequest
+          |> where([r], r.execution_id == ^run.execution_id and r.status == "approved")
+          |> order_by([r], desc: r.decided_at, desc: r.inserted_at)
+          |> limit(1)
+          |> Repo.one()
+
+        true ->
+          nil
+      end
+
+    case latest do
+      %ApprovalRequest{} = req ->
+        serialized = ApprovalQueue.serialize(req)
+
+        %{
+          approval_request: serialized,
+          approved_request: serialized,
+          last_approval: serialized,
+          approval_decision: %{
+            "status" => "approved",
+            "decided_by" => req.decided_by,
+            "decision_reason" => req.decision_reason,
+            "tool_name" => req.tool_name,
+            "arguments" => req.arguments
+          }
+        }
+
+      req_map when is_map(req_map) ->
+        %{
+          approval_request: req_map,
+          approved_request: req_map,
+          last_approval: req_map,
+          approval_decision: Map.get(req_map, :decision, req_map)
+        }
+
+      _ ->
+        %{}
+    end
+  end
+
+  defp ensure_approval_request(_run, _context, %ApprovalRequest{}), do: :ok
+
+  defp ensure_approval_request(run, context, request) when is_map(request) do
+    id = Map.get(request, :id) || Map.get(request, "id")
+
+    if is_nil(id) or is_nil(ApprovalQueue.get_request(id)) do
+      attrs = %{
+        execution_id: run.execution_id,
+        session_id: Map.get(context, :session_id),
+        workflow_id: run.workflow_id,
+        server_id: Map.get(request, :server_id) || Map.get(request, "server_id", "internal"),
+        tool_name: Map.get(request, :tool_name) || Map.get(request, "tool_name", "approval_gate"),
+        arguments: Map.get(request, :arguments) || Map.get(request, "arguments", %{}),
+        risk_tier: Map.get(request, :risk_tier) || Map.get(request, "risk_tier", "high"),
+        requested_by: "policy_gate"
+      }
+
+      ApprovalQueue.create_request(attrs)
+    else
+      :ok
+    end
+  end
+
+  defp ensure_approval_request(_run, _context, _request), do: :ok
+
+  defp initial_resumed_contexts(states) do
+    states
+    |> Enum.filter(fn {_id, state} -> state.record.status == "succeeded" end)
+    |> Map.new(fn {node_id, state} ->
+      out = state.record.output || %{}
+
+      custom_ctx =
+        Enum.reduce(out, %{}, fn {k, v}, acc ->
+          atom_key =
+            try do
+              String.to_existing_atom(k)
+            rescue
+              _ -> k
+            end
+
+          acc
+          |> Map.put(k, v)
+          |> Map.put(atom_key, v)
+        end)
+
+      standard_ctx =
+        %{
+          result: Map.get(out, "result"),
+          last_outcome: parse_outcome(Map.get(out, "last_outcome")),
+          feedback: Map.get(out, "feedback"),
+          evaluation_score: Map.get(out, "evaluation_score"),
+          evaluation_feedback: Map.get(out, "evaluation_feedback")
+        }
+        |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+        |> Map.new()
+
+      ctx = Map.merge(custom_ctx, standard_ctx)
+
+      {node_id, ctx}
+    end)
+  end
+
+  defp initial_resumed_history(states, existing_history) do
+    if existing_history != [] do
+      existing_history
+    else
+      states
+      |> Map.values()
+      |> Enum.filter(&(&1.record.status == "succeeded"))
+      |> Enum.sort_by(& &1.record.inserted_at, DateTime)
+      |> Enum.map(fn state ->
+        step_record(
+          state.record.node_id,
+          parse_outcome(state.record.outcome),
+          state.record.output || %{}
+        )
+      end)
+    end
+  end
+
+  defp parse_outcome(nil), do: :success
+  defp parse_outcome(val) when is_atom(val), do: val
+
+  defp parse_outcome(val) when is_binary(val) do
+    String.to_existing_atom(val)
+  rescue
+    ArgumentError -> val
+  end
+
+  defp parse_outcome(val), do: val
 
   defp outcome_matches?(nil, _outcome), do: true
   defp outcome_matches?(expected, outcome), do: to_string(expected) == to_string(outcome)
@@ -788,7 +1400,13 @@ defmodule AOS.AgentOS.Orchestration.DAGEngine do
   defp json_value(nil), do: nil
   defp json_value(value) when is_binary(value) or is_number(value) or is_boolean(value), do: value
   defp json_value(%DateTime{} = value), do: DateTime.to_iso8601(value)
+  defp json_value(value) when is_atom(value), do: to_string(value)
   defp json_value(value) when is_list(value), do: Enum.map(value, &json_value/1)
+
+  defp json_value(%ResumeContext{} = value),
+    do: value |> ResumeContext.to_map() |> json_value()
+
+  defp json_value(%_{} = value), do: value |> Map.from_struct() |> json_value()
 
   defp json_value(value) when is_map(value),
     do: Map.new(value, fn {key, item} -> {to_string(key), json_value(item)} end)

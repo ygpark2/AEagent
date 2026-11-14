@@ -1,0 +1,18 @@
+# sprint-status.yaml
+generated: "11-14-2026 10:15"
+last_updated: "11-14-2026 10:15"
+project: aeagent
+project_key: AEA
+tracking_system: file-system
+story_location: "_bmad-output/implementation-artifacts"
+
+development_status:
+  epic-1: done
+  1-approval-suspension-and-continuation: done
+  2-namespaced-parallel-fan-in-merging: done
+  3-standardize-context-serialization-and-atom-keys: done
+  4-mcp-tool-health-monitoring-and-circuit-breaker: done
+  5-enforce-tool-capability-scopes-and-boundaries: done
+  6-watchdog-supervisor-for-stuck-executions: done
+  7-historical-execution-search-and-replay: done
+  epic-1-retrospective: optional

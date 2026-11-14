@@ -4,6 +4,7 @@ defmodule AOS.AgentOS.Roles.LLM do
   Includes handling for :empty_response as a retryable error.
   """
   alias AOS.AgentOS.Config
+  alias AOS.AgentOS.Core.PolicyGate
   alias AOS.AgentOS.Harness
   alias AOS.AgentOS.Harness.Budget
   alias AOS.AgentOS.LLM.{Client, Usage}
@@ -124,36 +125,40 @@ defmodule AOS.AgentOS.Roles.LLM do
           [t] -> {"internal", t}
         end
 
-      metadata = Tools.metadata_for(server_id, tool_name)
+      if not Tools.tool_available?(server_id, tool_name) do
+        {:error, :tool_unavailable}
+      else
+        with :ok <- PolicyGate.check_tool(opts, server_id, tool_name, args),
+             metadata = Tools.metadata_for(server_id, tool_name),
+             {:ok, budgeted_opts} <- Budget.before_tool(opts, server_id, tool_name, metadata) do
+          decision =
+            ApprovalService.request_tool_confirmation(
+              server_id,
+              tool_name,
+              args,
+              notify_pid,
+              metadata,
+              budgeted_opts
+            )
 
-      with {:ok, budgeted_opts} <- Budget.before_tool(opts, server_id, tool_name, metadata) do
-        decision =
-          ApprovalService.request_tool_confirmation(
-            server_id,
-            tool_name,
-            args,
-            notify_pid,
-            metadata,
-            budgeted_opts
-          )
+          case decision do
+            {:pending, request} ->
+              {:error, {:approval_required, request}}
 
-        case decision do
-          {:pending, request} ->
-            {:error, {:approval_required, request}}
+            _decision ->
+              result =
+                execute_decided_tool(
+                  server_id,
+                  tool_name,
+                  args,
+                  metadata,
+                  decision,
+                  notify_pid,
+                  budgeted_opts
+                )
 
-          _decision ->
-            result =
-              execute_decided_tool(
-                server_id,
-                tool_name,
-                args,
-                metadata,
-                decision,
-                notify_pid,
-                budgeted_opts
-              )
-
-            {:ok, result, Budget.after_tool(budgeted_opts, result)}
+              {:ok, result, Budget.after_tool(budgeted_opts, result)}
+          end
         end
       end
     end
@@ -173,6 +178,11 @@ defmodule AOS.AgentOS.Roles.LLM do
       end
 
     attempts = attempts_from_result(raw_result)
+    outcome = raw_result_to_outcome(raw_result)
+
+    if decision == :approved do
+      Tools.record_tool_result(server_id, tool_name, outcome)
+    end
 
     result =
       Tools.normalize_result(
@@ -181,7 +191,7 @@ defmodule AOS.AgentOS.Roles.LLM do
         args,
         metadata,
         decision,
-        raw_result_to_outcome(raw_result),
+        outcome,
         attempts
       )
 

@@ -4,7 +4,7 @@ defmodule AOS.AgentOS.Core.DAGRun do
   use AOS.Schema
   import Ecto.Changeset
 
-  @statuses ~w(queued running succeeded failed blocked cancelled)
+  @statuses ~w(queued running succeeded failed blocked cancelled suspended timed_out)
 
   schema "agent_dag_runs" do
     field :execution_id, Ecto.UUID

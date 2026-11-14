@@ -7,6 +7,7 @@ defmodule AOS.Application do
 
   alias AOS.AgentOS.ConfigValidator
   alias AOS.AgentOS.Core.MemoryManager
+  alias AOS.AgentOS.Execution.Watchdog
   alias AOS.AgentOS.MCP.Manager
   alias AOS.AgentOS.Orchestration.MetaCoordinator
   alias AOS.AgentOS.Runtime.{AIPool, AIRuntime, Scheduler, SessionSupervisor}
@@ -48,6 +49,8 @@ defmodule AOS.Application do
       MemoryManager,
       # Start MCP Manager
       Manager,
+      # Execution watchdog supervisor for stalled and timed-out executions
+      Watchdog,
       # Start the Autonomous Scheduler
       Scheduler,
       # Start Local AI Runtime

@@ -38,35 +38,45 @@ defmodule AOS.AgentOS.Execution.CheckpointService do
   end
 
   def to_runtime_map(%ResumeContext{} = context), do: ResumeContext.to_map(context)
-  def to_runtime_map(context) when is_map(context), do: context
 
-  def initial_context_for_run(_execution_id, initial_context)
-      when map_size(initial_context) > 0 do
+  def to_runtime_map(context) when is_map(context) do
+    context
+    |> ResumeContext.from_map()
+    |> ResumeContext.to_map()
+  end
+
+  def to_runtime_map(other), do: other
+
+  def initial_context_for_run(nil, initial_context) do
     deserialize_resume_context(initial_context)
   end
 
   def initial_context_for_run(execution_id, initial_context) do
-    execution = Executions.get_execution!(execution_id)
+    case Executions.get_execution(execution_id) do
+      nil ->
+        deserialize_resume_context(initial_context)
 
-    base_context =
-      cond do
-        resume_seed = CheckpointStore.latest_resume_seed(execution.id) ->
-          resume_seed
-          |> Map.get(:payload, %{})
-          |> payload_map("context")
-          |> deserialize_resume_context()
-          |> merge_initial_context(initial_context)
+      execution ->
+        base_context =
+          cond do
+            resume_seed = CheckpointStore.latest_resume_seed(execution.id) ->
+              resume_seed
+              |> Map.get(:payload, %{})
+              |> payload_map("context")
+              |> deserialize_resume_context()
+              |> merge_initial_context(initial_context)
 
-        execution.trigger_kind == "resume" and execution.source_execution_id ->
-          execution.source_execution_id
-          |> checkpoint_resume_context(nil, @default_resume_mode)
-          |> merge_initial_context(initial_context)
+            execution.trigger_kind == "resume" and execution.source_execution_id ->
+              execution.source_execution_id
+              |> checkpoint_resume_context(nil, @default_resume_mode)
+              |> merge_initial_context(initial_context)
 
-        true ->
-          deserialize_resume_context(initial_context)
-      end
+            true ->
+              deserialize_resume_context(initial_context)
+          end
 
-    ensure_resume_target(base_context, execution)
+        ensure_resume_target(base_context, execution)
+    end
   end
 
   def serialize_step(step) do
@@ -137,16 +147,79 @@ defmodule AOS.AgentOS.Execution.CheckpointService do
   end
 
   defp merge_initial_context(%ResumeContext{} = context, initial_context) do
+    initial_map =
+      case initial_context do
+        %ResumeContext{} -> ResumeContext.to_map(initial_context)
+        m when is_map(m) -> m
+        _ -> %{}
+      end
+
     context
     |> ResumeContext.to_map()
-    |> Map.merge(initial_context)
+    |> merge_context_maps(initial_map)
     |> ResumeContext.from_map()
   end
 
   defp merge_resume_context(%ResumeContext{} = source, %ResumeContext{} = target) do
     source
     |> ResumeContext.to_map()
-    |> Map.merge(ResumeContext.to_map(target))
+    |> merge_context_maps(ResumeContext.to_map(target))
     |> ResumeContext.from_map()
+  end
+
+  defp merge_context_maps(ctx1, ctx2) when is_map(ctx1) and is_map(ctx2) do
+    merged =
+      Map.merge(ctx1, ctx2, fn
+        key, v1, v2 when key in [:artifacts, "artifacts"] ->
+          (List.wrap(v1) ++ List.wrap(v2)) |> Enum.uniq()
+
+        key, v1, v2 when key in [:node_outputs, "node_outputs"] and is_map(v1) and is_map(v2) ->
+          Map.merge(v1, v2)
+
+        key, v1, v2
+        when key in [:execution_history, "execution_history", :history, "history"] and is_list(v1) and
+               is_list(v2) ->
+          v1 ++ v2
+
+        _key, v1, v2 when is_list(v1) and is_list(v2) ->
+          Enum.uniq(v1 ++ v2)
+
+        _key, v1, v2 when is_map(v1) and is_map(v2) and not is_struct(v1) and not is_struct(v2) ->
+          merge_context_maps(v1, v2)
+
+        _key, _v1, v2 ->
+          v2
+      end)
+
+    sync_schema_keys(merged)
+  end
+
+  defp merge_context_maps(ctx1, _ctx2) when is_map(ctx1), do: ctx1
+  defp merge_context_maps(_ctx1, ctx2) when is_map(ctx2), do: ctx2
+  defp merge_context_maps(ctx1, _ctx2), do: ctx1
+
+  defp sync_schema_keys(map) when is_map(map) do
+    Enum.reduce([:artifacts, :node_outputs, :inputs, :execution_history, :history], map, fn key,
+                                                                                            acc ->
+      atom_val = Map.get(acc, key)
+      str_val = Map.get(acc, to_string(key))
+
+      merged_val =
+        cond do
+          is_map(atom_val) and is_map(str_val) -> Map.merge(str_val, atom_val)
+          is_list(atom_val) and is_list(str_val) -> Enum.uniq(str_val ++ atom_val)
+          not is_nil(atom_val) -> atom_val
+          not is_nil(str_val) -> str_val
+          true -> nil
+        end
+
+      if is_nil(merged_val) do
+        acc
+      else
+        acc
+        |> Map.put(key, merged_val)
+        |> Map.put(to_string(key), merged_val)
+      end
+    end)
   end
 end

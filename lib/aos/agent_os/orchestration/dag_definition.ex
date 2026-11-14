@@ -115,8 +115,31 @@ defmodule AOS.AgentOS.Orchestration.DAGDefinition do
   defp normalize_node_spec(spec), do: {spec, %{}}
 
   defp resolve_node(module) when is_atom(module), do: module
-  defp resolve_node(component) when is_binary(component), do: NodeRegistry.get_node(component)
+
+  defp resolve_node(component) when is_binary(component) do
+    case NodeRegistry.get_node(component) do
+      nil ->
+        resolve_module_string(component)
+
+      node ->
+        node
+    end
+  end
+
   defp resolve_node(_component), do: nil
+
+  defp resolve_module_string(str) do
+    module_atom =
+      if String.starts_with?(str, "Elixir.") do
+        String.to_existing_atom(str)
+      else
+        String.to_existing_atom("Elixir." <> str)
+      end
+
+    if Code.ensure_loaded?(module_atom), do: module_atom, else: nil
+  rescue
+    _ -> nil
+  end
 
   defp normalize_edges(edges) when is_list(edges) do
     Enum.reduce_while(edges, {:ok, []}, fn edge, {:ok, acc} ->

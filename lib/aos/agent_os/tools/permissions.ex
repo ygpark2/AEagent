@@ -55,6 +55,22 @@ defmodule AOS.AgentOS.Tools.Permissions do
     end
   end
 
+  @doc """
+  Resolves the capability scope ("file_read", "file_write", "shell_exec", "web_search", "web_fetch")
+  for a given tool name.
+  """
+  def tool_scope(tool_name) when is_binary(tool_name) do
+    Enum.find_value(permission_tools(), fn {scope, tools} ->
+      if tool_name in tools, do: scope, else: nil
+    end)
+  end
+
+  def tool_scope(tool_name) when is_atom(tool_name) and not is_nil(tool_name) do
+    tool_scope(Atom.to_string(tool_name))
+  end
+
+  def tool_scope(_), do: nil
+
   defp allowed_tool_names(skills) do
     explicit_tools =
       skills |> Enum.flat_map(&(Map.get(&1, :required_tools, []) || [])) |> Enum.map(&to_string/1)

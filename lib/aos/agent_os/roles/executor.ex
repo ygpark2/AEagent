@@ -2,12 +2,72 @@ defmodule AOS.AgentOS.Roles.Executor do
   @moduledoc "Executes a user task through the LLM and available tools."
 
   @behaviour AOS.AgentOS.Role
+  alias AOS.AgentOS.Core.PolicyGate
+  alias AOS.AgentOS.MCP.Manager
   alias AOS.AgentOS.Roles.LLM
+  alias AOS.AgentOS.Tools
 
   def id, do: :executor
   def schema, do: %{}
 
+  def execute_tool(server_id, tool_name, args, opts \\ []) do
+    if Tools.tool_available?(server_id, tool_name) do
+      with :ok <- PolicyGate.check_tool(opts, server_id, tool_name, args) do
+        call_and_record_tool(server_id, tool_name, args, opts)
+      end
+    else
+      {:error, :tool_unavailable}
+    end
+  end
+
+  defp call_and_record_tool(server_id, tool_name, args, opts) do
+    timeout_ms = Keyword.get(opts, :timeout_ms, 60_000)
+
+    case Manager.call_tool(server_id, tool_name, args, timeout_ms) do
+      {:ok, res} = success ->
+        Tools.record_tool_result(server_id, tool_name, success)
+        {:ok, res}
+
+      {:error, reason} = failure ->
+        Tools.record_tool_result(server_id, tool_name, failure)
+        {:error, reason}
+    end
+  end
+
   def run(input, _ctx) do
+    tool_name = Map.get(input, :tool_name) || Map.get(input, "tool_name")
+
+    if tool_name do
+      server_id = Map.get(input, :server_id) || Map.get(input, "server_id") || "internal"
+      args = Map.get(input, :args) || Map.get(input, "args") || %{}
+
+      opts =
+        input
+        |> Map.take([
+          :execution_id,
+          :session_id,
+          :workflow_id,
+          :node_id,
+          :allowed_scopes,
+          :safe_paths,
+          :allowed_domains,
+          :workspace_root
+        ])
+        |> Map.to_list()
+
+      case execute_tool(server_id, tool_name, args, opts) do
+        {:ok, result} ->
+          {:ok, Map.put(input, :execution_result, result)}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      run_llm(input)
+    end
+  end
+
+  defp run_llm(input) do
     skills = Map.get(input, :selected_skills, [])
     message = Map.get(input, :message) || Map.get(input, :task, "")
     skill_context = build_skill_context(skills)

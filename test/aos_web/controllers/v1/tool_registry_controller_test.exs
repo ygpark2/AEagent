@@ -53,4 +53,31 @@ defmodule AOSWeb.V1.ToolRegistryControllerTest do
              }
            } = json_response(conn, 202)
   end
+
+  test "returns registry health summary", %{conn: conn} do
+    {:ok, %{"tools" => tools}} = Shell.list_tools()
+
+    tools
+    |> Enum.map(&Map.put(&1, "server_id", "internal"))
+    |> Tools.sync_registry()
+
+    Tools.update_registry_entry("internal", "read_file", %{health_status: "unavailable"})
+
+    conn = get(conn, "/api/v1/tools/registry/health")
+    response = json_response(conn, 200)
+
+    assert %{
+             "data" => %{"healthy" => healthy, "unavailable" => unavailable, "tools" => tool_list}
+           } =
+             response
+
+    assert unavailable >= 1
+    assert is_integer(healthy)
+    assert is_list(tool_list)
+
+    assert Enum.any?(
+             tool_list,
+             &(&1["tool_name"] == "read_file" and &1["health_status"] == "unavailable")
+           )
+  end
 end

@@ -20,6 +20,16 @@ defmodule AOSWeb.V1.ToolRegistryController do
     json(conn, %{data: entries})
   end
 
+  def health(conn, _params) do
+    data = Tools.registry_health_summary()
+
+    json(conn, %{
+      data: data,
+      summary: data.summary,
+      tools: data.tools
+    })
+  end
+
   def sync(conn, _params) do
     result = Manager.sync_tool_registry()
 

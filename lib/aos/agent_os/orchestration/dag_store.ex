@@ -9,6 +9,20 @@ defmodule AOS.AgentOS.Orchestration.DAGStore do
   def get_run(id), do: Repo.get(DAGRun, id)
   def get_run!(id), do: Repo.get!(DAGRun, id)
 
+  def list_runs(opts \\ []) do
+    limit = Keyword.get(opts, :limit, 50)
+    status = Keyword.get(opts, :status)
+
+    DAGRun
+    |> maybe_filter_status(status)
+    |> order_by([r], desc: r.inserted_at)
+    |> limit(^limit)
+    |> Repo.all()
+  end
+
+  defp maybe_filter_status(query, nil), do: query
+  defp maybe_filter_status(query, status), do: where(query, [r], r.status == ^to_string(status))
+
   def get_run_by_execution(execution_id) do
     DAGRun
     |> where([r], r.execution_id == ^execution_id)

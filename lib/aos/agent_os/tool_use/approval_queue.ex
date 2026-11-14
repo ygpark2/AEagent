@@ -5,8 +5,9 @@ defmodule AOS.AgentOS.ToolUse.ApprovalQueue do
 
   import Ecto.Query
 
-  alias AOS.AgentOS.ToolUse.ApprovalRequest
   alias AOS.AgentOS.Execution.EventStore
+  alias AOS.AgentOS.Executions
+  alias AOS.AgentOS.ToolUse.ApprovalRequest
   alias AOS.Repo
 
   @default_timeout_seconds 300
@@ -58,8 +59,29 @@ defmodule AOS.AgentOS.ToolUse.ApprovalQueue do
     |> Enum.find(&(&1.arguments == arguments))
   end
 
-  def approve(id, attrs \\ %{}), do: decide(id, "approved", attrs)
-  def reject(id, attrs \\ %{}), do: decide(id, "rejected", attrs)
+  def approve(id, attrs \\ %{}) do
+    with {:ok, request} <- decide(id, "approved", attrs) do
+      maybe_resume_execution(request, attrs)
+      {:ok, request}
+    end
+  end
+
+  def reject(id, attrs \\ %{}) do
+    with {:ok, request} <- decide(id, "rejected", attrs) do
+      maybe_handle_rejection(request, attrs)
+      {:ok, request}
+    end
+  end
+
+  def cancel_pending_for_execution(execution_id, reason \\ "Execution timed out") do
+    from(r in ApprovalRequest,
+      where: r.execution_id == ^execution_id and r.status == "pending"
+    )
+    |> Repo.all()
+    |> Enum.map(fn req ->
+      reject(req.id, %{decision_reason: reason})
+    end)
+  end
 
   def serialize(%ApprovalRequest{} = request) do
     %{
@@ -83,22 +105,117 @@ defmodule AOS.AgentOS.ToolUse.ApprovalQueue do
   end
 
   defp decide(id, status, attrs) when status in ~w(approved rejected) do
-    request = get_request!(id)
+    case get_request(id) do
+      nil ->
+        {:error, :not_found}
 
-    if request.status == "pending" do
-      request
-      |> ApprovalRequest.changeset(
-        Map.merge(attrs, %{status: status, decided_at: DateTime.utc_now()})
-      )
-      |> Repo.update()
-      |> tap(fn
-        {:ok, updated} -> append_decision_event(updated)
-        _ -> :ok
-      end)
-    else
-      {:error, "approval request #{id} is already #{request.status}"}
+      %ApprovalRequest{status: "pending"} = request ->
+        request
+        |> ApprovalRequest.changeset(
+          Map.merge(attrs, %{status: status, decided_at: DateTime.utc_now()})
+        )
+        |> Repo.update()
+        |> tap(fn
+          {:ok, updated} -> append_decision_event(updated)
+          _ -> :ok
+        end)
+
+      %ApprovalRequest{} ->
+        {:error, "approval request already decided"}
     end
   end
+
+  defp maybe_resume_execution(%ApprovalRequest{execution_id: nil}, _attrs), do: :ok
+
+  defp maybe_resume_execution(%ApprovalRequest{} = request, attrs) do
+    resume? = Map.get(attrs, :resume, Map.get(attrs, "resume", true))
+
+    if resume? do
+      case Executions.get_execution(request.execution_id) do
+        nil ->
+          :ok
+
+        execution when execution.status in ~w(suspended blocked) ->
+          async? = Map.get(attrs, :async, true)
+
+          Executions.resume_execution(execution.id,
+            async: async?,
+            approval_request: request
+          )
+
+        _other ->
+          :ok
+      end
+    else
+      :ok
+    end
+  end
+
+  defp maybe_handle_rejection(%ApprovalRequest{execution_id: nil}, _attrs), do: :ok
+
+  defp maybe_handle_rejection(%ApprovalRequest{} = request, _attrs) do
+    alias AOS.AgentOS.Orchestration.DAGStore
+
+    case Executions.get_execution(request.execution_id) do
+      nil ->
+        :ok
+
+      execution ->
+        run = DAGStore.get_run_by_execution(execution.id)
+        cancel_suspended_dag_run(run)
+        fail_suspended_execution(execution)
+    end
+  end
+
+  defp cancel_suspended_dag_run(%{status: "suspended"} = run) do
+    alias AOS.AgentOS.Orchestration.{DAGStore, EventProtocol, MetaCoordinator}
+
+    DAGStore.update_run(run.id, %{
+      status: "cancelled",
+      finished_at: DateTime.utc_now(),
+      error_message: "approval_rejected"
+    })
+
+    run.id
+    |> DAGStore.list_nodes()
+    |> Enum.filter(&(&1.status in ~w(suspended pending ready)))
+    |> Enum.each(fn node ->
+      DAGStore.update_node(node, %{
+        status: "cancelled",
+        outcome: "rejected",
+        finished_at: DateTime.utc_now()
+      })
+    end)
+
+    MetaCoordinator.emit(
+      EventProtocol.new("orchestration.cancelled", %{
+        run_id: run.id,
+        execution_id: run.execution_id,
+        parent_run_id: run.parent_run_id,
+        orchestrator_id: run.orchestrator_id,
+        idempotency_key: "#{run.id}:orchestration.cancelled:rejection",
+        payload: %{reason: "approval_rejected"}
+      })
+    )
+  end
+
+  defp cancel_suspended_dag_run(_run), do: :ok
+
+  defp fail_suspended_execution(%{status: status} = execution)
+       when status in ~w(suspended blocked) do
+    Executions.fail_execution(
+      execution.id,
+      %{
+        task: execution.task,
+        domain: execution.domain,
+        session_id: execution.session_id,
+        execution_history: []
+      },
+      :approval_rejected
+    )
+  end
+
+  defp fail_suspended_execution(_execution), do: :ok
 
   defp maybe_filter_status(query, nil), do: query
   defp maybe_filter_status(query, status), do: where(query, [r], r.status == ^status)

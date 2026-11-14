@@ -58,6 +58,7 @@ defmodule AOSWeb.AgentDashboardLive do
         "settings" -> :settings
         "approvals" -> :approvals
         "timeline" -> :timeline
+        "executions" -> :executions
         _ -> :inspection
       end
 
@@ -65,8 +66,33 @@ defmodule AOSWeb.AgentDashboardLive do
      assign(socket,
        active_right_tab: active_right_tab,
        durable_approvals: DashboardService.durable_approvals(),
-       timeline_entries: DashboardService.timeline_entries(socket.assigns.current_execution_id)
+       timeline_entries: DashboardService.timeline_entries(socket.assigns.current_execution_id),
+       historical_executions:
+         DashboardService.load_historical_executions(
+           socket.assigns.execution_filter_status,
+           socket.assigns.execution_search_query
+         )
      )}
+  end
+
+  @impl true
+  def handle_event("filter_executions", params, socket) do
+    status = Map.get(params, "status", socket.assigns.execution_filter_status)
+    query = Map.get(params, "query", socket.assigns.execution_search_query)
+
+    executions = DashboardService.load_historical_executions(status, query)
+
+    {:noreply,
+     assign(socket,
+       execution_filter_status: status,
+       execution_search_query: query,
+       historical_executions: executions
+     )}
+  end
+
+  @impl true
+  def handle_event("select_execution", %{"id" => id}, socket) do
+    {:noreply, assign(socket, DashboardService.select_execution(socket.assigns, id))}
   end
 
   @impl true
@@ -249,7 +275,7 @@ defmodule AOSWeb.AgentDashboardLive do
   defp resolve_durable_approval(socket, id, decision) do
     result =
       case decision do
-        :approved -> ApprovalQueue.approve(id, %{decided_by: "dashboard"})
+        :approved -> ApprovalQueue.approve(id, %{decided_by: "dashboard", resume: false})
         :rejected -> ApprovalQueue.reject(id, %{decided_by: "dashboard"})
       end
 

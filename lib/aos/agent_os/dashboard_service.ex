@@ -25,7 +25,10 @@ defmodule AOS.AgentOS.DashboardService do
       timeline_entries: [],
       active_right_tab: :inspection,
       ui_settings: default_ui_settings,
-      full_width: true
+      full_width: true,
+      execution_filter_status: "all",
+      execution_search_query: "",
+      historical_executions: load_historical_executions("all", "")
     }
   end
 
@@ -45,9 +48,46 @@ defmodule AOS.AgentOS.DashboardService do
       timeline_entries: [],
       active_right_tab: :inspection,
       ui_settings: default_ui_settings,
-      full_width: true
+      full_width: true,
+      execution_filter_status: "all",
+      execution_search_query: "",
+      historical_executions: []
     }
   end
+
+  def load_historical_executions(status \\ "all", query \\ "") do
+    opts =
+      [limit: 50]
+      |> maybe_put_status(status)
+      |> maybe_put_query(query)
+
+    Executions.list_executions(opts)
+  end
+
+  def select_execution(_assigns, execution_id) do
+    timeline = timeline_entries(execution_id)
+
+    %{
+      current_execution_id: execution_id,
+      timeline_entries: timeline,
+      active_right_tab: :timeline,
+      current_status: "Inspecting execution #{execution_id}"
+    }
+  end
+
+  defp maybe_put_status(opts, "all"), do: opts
+  defp maybe_put_status(opts, nil), do: opts
+  defp maybe_put_status(opts, ""), do: opts
+
+  defp maybe_put_status(opts, status) when is_binary(status),
+    do: Keyword.put(opts, :status, status)
+
+  defp maybe_put_status(opts, _), do: opts
+
+  defp maybe_put_query(opts, nil), do: opts
+  defp maybe_put_query(opts, ""), do: opts
+  defp maybe_put_query(opts, query) when is_binary(query), do: Keyword.put(opts, :query, query)
+  defp maybe_put_query(opts, _), do: opts
 
   def submit_message(message, assigns, notify_pid) do
     case handle_command(String.trim(message), assigns) do
